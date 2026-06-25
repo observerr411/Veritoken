@@ -2,13 +2,16 @@
 
 use crate::{InvoiceMeta, InvoiceToken, InvoiceTokenClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
+use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 struct Harness {
     env: Env,
     token: InvoiceTokenClient<'static>,
     kyc: KycRegistryClient<'static>,
+    compliance: ComplianceEngineClient<'static>,
     verifier: Address,
+    admin: Address,
 }
 
 fn meta(env: &Env) -> InvoiceMeta {
@@ -35,7 +38,10 @@ fn setup() -> Harness {
     let verifier = Address::generate(&env);
     kyc.add_verifier(&verifier);
 
-    let compliance_id = env.register(KycRegistry, ()); // placeholder address; unused by invoice token
+    let compliance_id = env.register(ComplianceEngine, ());
+    let compliance = ComplianceEngineClient::new(&env, &compliance_id);
+    compliance.initialize(&admin);
+
     let token_id = env.register(InvoiceToken, ());
     let token = InvoiceTokenClient::new(&env, &token_id);
     token.initialize(&admin, &kyc_id, &compliance_id, &meta(&env));
@@ -44,7 +50,9 @@ fn setup() -> Harness {
         env,
         token,
         kyc,
+        compliance,
         verifier,
+        admin,
     }
 }
 
@@ -123,4 +131,63 @@ fn test_redeem_insufficient_balance() {
     h.token.issue(&holder, &100);
     h.token.settle();
     assert!(h.token.try_redeem(&holder, &101).is_err());
+}
+
+#[test]
+fn test_transfer_success() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    
+    h.token.issue(&alice, &1000);
+    h.token.transfer(&alice, &bob, &400);
+    
+    assert_eq!(h.token.balance(&alice), 600);
+    assert_eq!(h.token.balance(&bob), 400);
+}
+
+#[test]
+fn test_transfer_kyc_rejection() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    
+    h.approve_kyc(&alice);
+    h.token.issue(&alice, &1000);
+    
+    // bob has no KYC
+    assert!(h.token.try_transfer(&alice, &bob, &400).is_err());
+}
+
+#[test]
+fn test_transfer_blocklist_rejection() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    
+    h.token.issue(&alice, &1000);
+    h.compliance.add_to_blocklist(&bob);
+    
+    assert!(h.token.try_transfer(&alice, &bob, &400).is_err());
+}
+
+#[test]
+fn test_transfer_post_settlement_rejection() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    
+    h.token.issue(&alice, &1000);
+    h.token.settle();
+    
+    assert!(h.token.try_transfer(&alice, &bob, &400).is_err());
 }

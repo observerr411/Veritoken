@@ -16,8 +16,16 @@ pub enum DataKey {
     ComplianceEngine,
     InvoiceMeta,
     Balance(Address),
+    Allowance(Address, Address),
     TotalSupply,
     Settled,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AllowanceValue {
+    pub amount: i128,
+    pub expiration_ledger: u32,
 }
 
 #[contracttype]
@@ -110,6 +118,9 @@ impl InvoiceToken {
         env.storage()
             .instance()
             .set(&DataKey::TotalSupply, &(supply + amount));
+        
+        Self::register_holder(&env, &to);
+
         env.events().publish((symbol_short!("issued"), to), amount);
     }
 
@@ -154,6 +165,96 @@ impl InvoiceToken {
         Self::read_balance(&env, id)
     }
 
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        from.require_auth();
+        if env.storage().instance().get::<DataKey, bool>(&DataKey::Settled).unwrap_or(false) {
+            panic!("invoice already settled");
+        }
+        if amount < 0 {
+            panic!("negative amount");
+        }
+        Self::require_kyc(&env, &from);
+        Self::require_kyc(&env, &to);
+        Self::require_compliance(&env, &from, &to, amount);
+
+        let from_bal = Self::read_balance(&env, from.clone());
+        if from_bal < amount {
+            panic!("insufficient balance");
+        }
+        env.storage().persistent().set(&DataKey::Balance(from.clone()), &(from_bal - amount));
+        
+        let to_bal = Self::read_balance(&env, to.clone());
+        env.storage().persistent().set(&DataKey::Balance(to.clone()), &(to_bal + amount));
+        
+        env.storage().persistent().extend_ttl(&DataKey::Balance(from.clone()), THRESHOLD, BUMP);
+        env.storage().persistent().extend_ttl(&DataKey::Balance(to.clone()), THRESHOLD, BUMP);
+
+        Self::register_holder(&env, &to);
+        env.events().publish((symbol_short!("transfer"), from, to), amount);
+    }
+
+    pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
+        spender.require_auth();
+        if env.storage().instance().get::<DataKey, bool>(&DataKey::Settled).unwrap_or(false) {
+            panic!("invoice already settled");
+        }
+        if amount < 0 {
+            panic!("negative amount");
+        }
+        Self::require_kyc(&env, &from);
+        Self::require_kyc(&env, &to);
+        Self::require_compliance(&env, &from, &to, amount);
+
+        let allowance = Self::read_allowance(&env, from.clone(), spender.clone());
+        if allowance.amount < amount {
+            panic!("insufficient allowance");
+        }
+        if allowance.expiration_ledger < env.ledger().sequence() {
+            panic!("allowance expired");
+        }
+        
+        let new_allowance = AllowanceValue {
+            amount: allowance.amount - amount,
+            expiration_ledger: allowance.expiration_ledger,
+        };
+        env.storage().persistent().set(&DataKey::Allowance(from.clone(), spender.clone()), &new_allowance);
+
+        let from_bal = Self::read_balance(&env, from.clone());
+        if from_bal < amount {
+            panic!("insufficient balance");
+        }
+        env.storage().persistent().set(&DataKey::Balance(from.clone()), &(from_bal - amount));
+        
+        let to_bal = Self::read_balance(&env, to.clone());
+        env.storage().persistent().set(&DataKey::Balance(to.clone()), &(to_bal + amount));
+        
+        env.storage().persistent().extend_ttl(&DataKey::Balance(from.clone()), THRESHOLD, BUMP);
+        env.storage().persistent().extend_ttl(&DataKey::Balance(to.clone()), THRESHOLD, BUMP);
+
+        Self::register_holder(&env, &to);
+        env.events().publish((symbol_short!("transfer"), from, to), amount);
+    }
+
+    pub fn approve(env: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32) {
+        from.require_auth();
+        if amount < 0 {
+            panic!("negative amount");
+        }
+        let allowance = AllowanceValue { amount, expiration_ledger };
+        env.storage().persistent().set(&DataKey::Allowance(from.clone(), spender.clone()), &allowance);
+        env.storage().persistent().extend_ttl(&DataKey::Allowance(from.clone(), spender.clone()), THRESHOLD, BUMP);
+        env.events().publish((symbol_short!("approve"), from, spender), (amount, expiration_ledger));
+    }
+
+    pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
+        let allowance = Self::read_allowance(&env, from, spender);
+        if allowance.expiration_ledger < env.ledger().sequence() {
+            0
+        } else {
+            allowance.amount
+        }
+    }
+
     pub fn total_supply(env: Env) -> i128 {
         env.storage()
             .instance()
@@ -189,6 +290,27 @@ impl InvoiceToken {
             .get(&DataKey::Balance(addr))
             .unwrap_or(0)
     }
+
+    fn read_allowance(env: &Env, from: Address, spender: Address) -> AllowanceValue {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Allowance(from, spender))
+            .unwrap_or(AllowanceValue { amount: 0, expiration_ledger: 0 })
+    }
+
+    fn require_compliance(env: &Env, from: &Address, to: &Address, amount: i128) {
+        let engine: Address = env.storage().instance().get(&DataKey::ComplianceEngine).unwrap();
+        let client = ComplianceEngineClient::new(env, &engine);
+        if !client.can_transfer(from, to, &amount) {
+            panic!("transfer rejected by compliance engine");
+        }
+    }
+
+    fn register_holder(env: &Env, addr: &Address) {
+        let engine: Address = env.storage().instance().get(&DataKey::ComplianceEngine).unwrap();
+        let client = ComplianceEngineClient::new(env, &engine);
+        client.register_holder(addr);
+    }
 }
 
 mod kyc_iface {
@@ -200,3 +322,14 @@ mod kyc_iface {
     }
 }
 use kyc_iface::KycRegistryClient;
+
+mod compliance_iface {
+    use soroban_sdk::{contractclient, Address};
+    #[contractclient(name = "ComplianceEngineClient")]
+    #[allow(dead_code)]
+    pub trait ComplianceEngine {
+        fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
+        fn register_holder(env: soroban_sdk::Env, addr: Address);
+    }
+}
+use compliance_iface::ComplianceEngineClient;
