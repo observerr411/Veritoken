@@ -134,10 +134,20 @@ impl ComplianceEngine {
             }
         }
 
+        if rules.max_holders > 0 {
+            let key = DataKey::HolderSince(to.clone());
+            if !env.storage().persistent().has(&key) {
+                let count = Self::holder_count(env);
+                if count >= rules.max_holders {
+                    return false;
+                }
+            }
+        }
+
         true
     }
 
-    /// Called by rwa-token after a mint to register a new holder.
+    /// Called by rwa-token after a mint or transfer to register a new holder.
     pub fn register_holder(env: Env, addr: Address) {
         let key = DataKey::HolderSince(addr.clone());
         if !env.storage().persistent().has(&key) {
@@ -153,6 +163,23 @@ impl ComplianceEngine {
             env.storage()
                 .instance()
                 .set(&DataKey::HolderCount, &(count + 1));
+        }
+    }
+
+    /// Called by rwa-token after a transfer or burn that removes the last token from a holder.
+    pub fn unregister_holder(env: Env, addr: Address) {
+        let key = DataKey::HolderSince(addr.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().remove(&key);
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::HolderCount)
+                .unwrap_or(0);
+            let new_count = if count > 0 { count - 1 } else { 0 };
+            env.storage()
+                .instance()
+                .set(&DataKey::HolderCount, &new_count);
         }
     }
 

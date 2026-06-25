@@ -109,6 +109,33 @@ fn test_register_holder_is_idempotent() {
 }
 
 #[test]
+fn test_unregister_holder_decrements_count() {
+    let (env, client, _admin) = setup();
+    let holder = Address::generate(&env);
+    client.register_holder(&holder);
+    assert_eq!(client.holder_count(), 1);
+
+    client.unregister_holder(&holder);
+    assert_eq!(client.holder_count(), 0);
+}
+
+#[test]
+fn test_max_holders_blocks_new_holder_but_allows_existing_holder() {
+    let (env, client, _admin) = setup();
+    let holder1 = Address::generate(&env);
+    let holder2 = Address::generate(&env);
+    let new_holder = Address::generate(&env);
+
+    client.set_rules(&rules(0, 0, 2, false));
+    client.register_holder(&holder1);
+    client.register_holder(&holder2);
+    assert_eq!(client.holder_count(), 2);
+
+    assert!(!client.can_transfer(&holder1, &new_holder, &1));
+    assert!(client.can_transfer(&holder1, &holder2, &1));
+}
+
+#[test]
 fn test_only_admin_can_set_rules() {
     let env = Env::default();
     let admin = Address::generate(&env);

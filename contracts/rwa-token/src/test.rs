@@ -160,6 +160,40 @@ fn test_transfer_blocked_by_max_amount() {
 }
 
 #[test]
+fn test_max_holder_cap_blocks_new_holder_and_maintains_count() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let charlie = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&charlie);
+
+    h.compliance.set_rules(&ComplianceRules {
+        max_transfer_amount: 0,
+        min_holding_period: 0,
+        max_holders: 2,
+        require_same_jurisdiction: false,
+        paused: false,
+    });
+
+    h.token.mint(&alice, &1_000);
+    assert_eq!(h.compliance.holder_count(), 1);
+
+    h.token.transfer(&alice, &bob, &400);
+    assert_eq!(h.compliance.holder_count(), 2);
+    assert!(h.token.try_transfer(&alice, &charlie, &1).is_err());
+
+    h.token.transfer(&alice, &bob, &600);
+    assert_eq!(h.token.balance(&alice), 0);
+    assert_eq!(h.compliance.holder_count(), 1);
+
+    h.token.transfer(&bob, &charlie, &1);
+    assert_eq!(h.compliance.holder_count(), 2);
+    assert_eq!(h.token.balance(&charlie), 1);
+}
+
+#[test]
 fn test_approve_and_transfer_from() {
     let h = setup();
     let alice = Address::generate(&h.env);

@@ -43,6 +43,18 @@ pub fn check_transfer(env: &Env, from: &Address, to: &Address, amount: i128) {
     }
 }
 
+pub fn register_holder(env: &Env, addr: &Address) {
+    let engine = read_compliance_engine(env);
+    let client = ComplianceEngineClient::new(env, &engine);
+    client.register_holder(addr.clone());
+}
+
+pub fn unregister_holder(env: &Env, addr: &Address) {
+    let engine = read_compliance_engine(env);
+    let client = ComplianceEngineClient::new(env, &engine);
+    client.unregister_holder(addr.clone());
+}
+
 mod compliance_interface {
     use soroban_sdk::{contractclient, Address};
 
@@ -50,6 +62,9 @@ mod compliance_interface {
     #[allow(dead_code)]
     pub trait ComplianceEngineInterface {
         fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
+        fn register_holder(env: soroban_sdk::Env, addr: Address);
+        fn unregister_holder(env: soroban_sdk::Env, addr: Address);
+        fn holder_count(env: soroban_sdk::Env) -> u32;
     }
 }
 use compliance_interface::ComplianceEngineClient;
