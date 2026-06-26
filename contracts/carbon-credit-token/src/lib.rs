@@ -98,6 +98,17 @@ impl CarbonCreditToken {
         env.storage().instance().get(&DataKey::ProjectMeta).unwrap()
     }
 
+    /// Replace project metadata. Admin-only; project_id is immutable.
+    pub fn update_meta(env: Env, new_meta: ProjectMeta) {
+        Self::require_admin(&env);
+        let old_meta: ProjectMeta = env.storage().instance().get(&DataKey::ProjectMeta).unwrap();
+        if new_meta.project_id != old_meta.project_id {
+            panic!("project_id is immutable");
+        }
+        env.storage().instance().set(&DataKey::ProjectMeta, &new_meta);
+        env.events().publish((symbol_short!("upd_meta"),), ());
+    }
+
     pub fn name(env: Env) -> String {
         String::from_str(&env, "Veritoken Carbon Credit")
     }

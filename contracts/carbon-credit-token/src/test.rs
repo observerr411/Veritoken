@@ -199,3 +199,50 @@ fn test_non_deployer_cannot_reinitialize() {
         .try_initialize(&attacker, &kyc_id, &ce_id, &meta(&h.env));
     assert!(result.is_err());
 }
+
+// ── update_meta ───────────────────────────────────────────────────────────────
+
+#[test]
+fn test_update_meta_succeeds() {
+    let h = setup();
+
+    let updated = ProjectMeta {
+        project_id: String::from_str(&h.env, "VCS-1234"), // same project_id
+        standard: String::from_str(&h.env, "Gold Standard"), // updated
+        vintage_year: 2025,
+        project_name: String::from_str(&h.env, "Amazon Reforestation v2"),
+        project_type: String::from_str(&h.env, "forestry"),
+        country: String::from_str(&h.env, "BR"),
+        verifier: String::from_str(&h.env, "SCS Global Services"), // re-verified
+        ipfs_cert_hash: String::from_str(&h.env, "Qm_new_cert..."),
+    };
+
+    h.token.update_meta(&updated);
+
+    let stored = h.token.get_meta();
+    assert_eq!(stored.standard, String::from_str(&h.env, "Gold Standard"));
+    assert_eq!(stored.vintage_year, 2025);
+    assert_eq!(
+        stored.ipfs_cert_hash,
+        String::from_str(&h.env, "Qm_new_cert...")
+    );
+    assert_eq!(stored.project_id, String::from_str(&h.env, "VCS-1234"));
+}
+
+#[test]
+fn test_update_meta_rejects_project_id_change() {
+    let h = setup();
+
+    let updated = ProjectMeta {
+        project_id: String::from_str(&h.env, "VCS-9999"), // different project_id
+        standard: String::from_str(&h.env, "VCS"),
+        vintage_year: 2024,
+        project_name: String::from_str(&h.env, "Amazon Reforestation"),
+        project_type: String::from_str(&h.env, "forestry"),
+        country: String::from_str(&h.env, "BR"),
+        verifier: String::from_str(&h.env, "Verra"),
+        ipfs_cert_hash: String::from_str(&h.env, "Qm..."),
+    };
+
+    assert!(h.token.try_update_meta(&updated).is_err());
+}
