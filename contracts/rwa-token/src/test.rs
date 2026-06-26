@@ -3,7 +3,10 @@
 use crate::{RwaToken, RwaTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env, String,
+};
 
 struct Harness {
     env: Env,

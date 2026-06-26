@@ -95,28 +95,20 @@ impl CarbonCreditToken {
     // ── Metadata ─────────────────────────────────────────────────────────────
 
     pub fn get_meta(env: Env) -> ProjectMeta {
-        env.storage()
-            .instance()
-            .extend_ttl(THRESHOLD, BUMP);
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage().instance().get(&DataKey::ProjectMeta).unwrap()
     }
 
     pub fn name(env: Env) -> String {
-        env.storage()
-            .instance()
-            .extend_ttl(THRESHOLD, BUMP);
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         String::from_str(&env, "Veritoken Carbon Credit")
     }
     pub fn symbol(env: Env) -> String {
-        env.storage()
-            .instance()
-            .extend_ttl(THRESHOLD, BUMP);
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         String::from_str(&env, "VTCC")
     }
     pub fn decimals(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .extend_ttl(THRESHOLD, BUMP);
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         0
     }
 

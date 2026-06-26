@@ -3,7 +3,10 @@
 use crate::{PropertyMeta, PropertyToken, PropertyTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env, String,
+};
 
 struct Harness {
     env: Env,
@@ -259,7 +262,10 @@ fn test_allowance_expiry() {
     // Allowance should now be 0 (expired).
     assert_eq!(h.token.allowance(&alice, &spender), 0);
     // transfer_from must fail since allowance is expired.
-    assert!(h.token.try_transfer_from(&spender, &alice, &bob, &10).is_err());
+    assert!(h
+        .token
+        .try_transfer_from(&spender, &alice, &bob, &10)
+        .is_err());
 }
 
 #[test]
@@ -274,7 +280,10 @@ fn test_transfer_from_insufficient_allowance() {
 
     h.token.approve(&alice, &spender, &10, &1_000_000);
     // Attempt to transfer more than the approved amount.
-    assert!(h.token.try_transfer_from(&spender, &alice, &bob, &20).is_err());
+    assert!(h
+        .token
+        .try_transfer_from(&spender, &alice, &bob, &20)
+        .is_err());
 }
 
 #[test]

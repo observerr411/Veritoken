@@ -228,13 +228,7 @@ impl InvoiceToken {
             .publish((symbol_short!("transfer"), from, to), amount);
     }
 
-    pub fn transfer_from(
-        env: Env,
-        spender: Address,
-        from: Address,
-        to: Address,
-        amount: i128,
-    ) {
+    pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         spender.require_auth();
         if env

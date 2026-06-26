@@ -217,7 +217,10 @@ fn test_transfer_from_insufficient_allowance() {
 
     let expiry = h.env.ledger().sequence() + 1_000;
     h.token.approve(&alice, &spender, &50, &expiry);
-    assert!(h.token.try_transfer_from(&spender, &alice, &bob, &51).is_err());
+    assert!(h
+        .token
+        .try_transfer_from(&spender, &alice, &bob, &51)
+        .is_err());
 }
 
 #[test]
