@@ -26,6 +26,22 @@ pub enum DataKey {
     /// on every balance change so transfers never move accrued dividends.
     Unclaimed(Address),
     DividendPerShare,
+    /// SEP-41 delegated-transfer allowance: (owner, spender) → AllowanceValue.
+    Allowance(AllowanceKey),
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AllowanceKey {
+    pub from: Address,
+    pub spender: Address,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AllowanceValue {
+    pub amount: i128,
+    pub expiration_ledger: u32,
 }
 
 #[contracttype]
@@ -138,6 +154,76 @@ impl PropertyToken {
         }
         // Snapshot both parties' accrued dividends before balances move so that
         // transferring shares never transfers already-accrued dividends.
+        Self::accrue(&env, from.clone());
+        Self::accrue(&env, to.clone());
+        let from_bal = Self::read_balance(&env, from.clone());
+        if from_bal < shares {
+            panic!("insufficient shares");
+        }
+        Self::write_balance(&env, from.clone(), from_bal - shares);
+        let to_bal = Self::read_balance(&env, to.clone());
+        Self::write_balance(&env, to.clone(), to_bal + shares);
+        Self::reset_debt(&env, from.clone());
+        Self::reset_debt(&env, to.clone());
+        Self::register_holder(&env, &to);
+        env.events()
+            .publish((symbol_short!("transfer"), from, to), shares);
+    }
+
+    // ── SEP-41 Allowance / Delegated Transfer ───────────────────────────────
+
+    /// Approve `spender` to transfer up to `amount` shares on behalf of `from`.
+    /// The allowance expires at `expiration_ledger` (inclusive). Passing
+    /// `amount = 0` revokes an existing allowance.
+    pub fn approve(
+        env: Env,
+        from: Address,
+        spender: Address,
+        amount: i128,
+        expiration_ledger: u32,
+    ) {
+        from.require_auth();
+        if amount > 0 && expiration_ledger < env.ledger().sequence() {
+            panic!("expiration_ledger is in the past");
+        }
+        let key = DataKey::Allowance(AllowanceKey {
+            from: from.clone(),
+            spender: spender.clone(),
+        });
+        let value = AllowanceValue {
+            amount,
+            expiration_ledger,
+        };
+        env.storage().temporary().set(&key, &value);
+        if amount > 0 {
+            let ttl = expiration_ledger - env.ledger().sequence();
+            env.storage().temporary().extend_ttl(&key, ttl, ttl);
+        }
+        env.events().publish(
+            (symbol_short!("approve"), from, spender),
+            (amount, expiration_ledger),
+        );
+    }
+
+    /// Returns the number of shares `spender` is allowed to transfer on behalf
+    /// of `from`. Returns 0 if no allowance exists or it has expired.
+    pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
+        Self::read_allowance(&env, from, spender).amount
+    }
+
+    /// Transfer `shares` from `from` to `to` using a previously approved
+    /// allowance. Runs the full compliance and dividend-snapshot logic.
+    pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, shares: i128) {
+        spender.require_auth();
+        Self::require_kyc(&env, &from);
+        Self::require_kyc(&env, &to);
+        Self::check_compliance(&env, &from, &to, shares);
+        if shares <= 0 {
+            panic!("shares must be positive");
+        }
+        // Spend the allowance first — panics on insufficient/expired allowance.
+        Self::spend_allowance(&env, from.clone(), spender, shares);
+        // Snapshot accrued dividends for both parties before balances move.
         Self::accrue(&env, from.clone());
         Self::accrue(&env, to.clone());
         let from_bal = Self::read_balance(&env, from.clone());
@@ -339,6 +425,59 @@ impl PropertyToken {
         let key = DataKey::Balance(addr);
         env.storage().persistent().set(&key, &amount);
         env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+    }
+
+    // ── Allowance helpers ────────────────────────────────────────────────────
+
+    fn read_allowance(env: &Env, from: Address, spender: Address) -> AllowanceValue {
+        let key = DataKey::Allowance(AllowanceKey {
+            from: from.clone(),
+            spender: spender.clone(),
+        });
+        if let Some(val) = env
+            .storage()
+            .temporary()
+            .get::<DataKey, AllowanceValue>(&key)
+        {
+            if val.expiration_ledger < env.ledger().sequence() {
+                AllowanceValue {
+                    amount: 0,
+                    expiration_ledger: val.expiration_ledger,
+                }
+            } else {
+                val
+            }
+        } else {
+            AllowanceValue {
+                amount: 0,
+                expiration_ledger: 0,
+            }
+        }
+    }
+
+    fn spend_allowance(env: &Env, from: Address, spender: Address, amount: i128) {
+        let allowance = Self::read_allowance(env, from.clone(), spender.clone());
+        if allowance.amount < amount {
+            panic!("insufficient allowance");
+        }
+        let new_amount = allowance.amount - amount;
+        // Rewrite without bumping TTL — expiration is unchanged.
+        let key = DataKey::Allowance(AllowanceKey {
+            from: from.clone(),
+            spender: spender.clone(),
+        });
+        let value = AllowanceValue {
+            amount: new_amount,
+            expiration_ledger: allowance.expiration_ledger,
+        };
+        env.storage().temporary().set(&key, &value);
+        if new_amount > 0 {
+            let current = env.ledger().sequence();
+            if allowance.expiration_ledger > current {
+                let ttl = allowance.expiration_ledger - current;
+                env.storage().temporary().extend_ttl(&key, ttl, ttl);
+            }
+        }
     }
 }
 

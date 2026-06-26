@@ -3,7 +3,7 @@
 use crate::{PropertyMeta, PropertyToken, PropertyTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String};
 
 struct Harness {
     env: Env,
@@ -212,4 +212,95 @@ fn test_transfer_snapshots_dividends() {
     h.token.deposit_dividend(&1_000);
     assert_eq!(h.token.pending_dividend(&bob), 100);
     assert_eq!(h.token.pending_dividend(&alice), 0);
+}
+
+// ── Allowance / transfer_from tests ─────────────────────────────────────────
+
+#[test]
+fn test_approve_and_transfer_from() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &100);
+
+    // Alice approves spender for 60 shares, expiring far in the future.
+    h.token.approve(&alice, &spender, &60, &1_000_000);
+    assert_eq!(h.token.allowance(&alice, &spender), 60);
+
+    // Spender moves 40 shares from Alice to Bob.
+    h.token.transfer_from(&spender, &alice, &bob, &40);
+    assert_eq!(h.token.balance(&alice), 60);
+    assert_eq!(h.token.balance(&bob), 40);
+    // Remaining allowance is 20.
+    assert_eq!(h.token.allowance(&alice, &spender), 20);
+}
+
+#[test]
+fn test_allowance_expiry() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &100);
+
+    // Approve with expiration at current ledger + 5.
+    let current = h.env.ledger().sequence();
+    h.token.approve(&alice, &spender, &50, &(current + 5));
+    assert_eq!(h.token.allowance(&alice, &spender), 50);
+
+    // Advance the ledger past the expiration.
+    h.env.ledger().set_sequence_number(current + 10);
+
+    // Allowance should now be 0 (expired).
+    assert_eq!(h.token.allowance(&alice, &spender), 0);
+    // transfer_from must fail since allowance is expired.
+    assert!(h.token.try_transfer_from(&spender, &alice, &bob, &10).is_err());
+}
+
+#[test]
+fn test_transfer_from_insufficient_allowance() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &100);
+
+    h.token.approve(&alice, &spender, &10, &1_000_000);
+    // Attempt to transfer more than the approved amount.
+    assert!(h.token.try_transfer_from(&spender, &alice, &bob, &20).is_err());
+}
+
+#[test]
+fn test_transfer_from_snapshots_dividends() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &100);
+
+    // Deposit 1000 stroops → 1 per share. Alice accrues 100.
+    h.token.deposit_dividend(&1_000);
+    h.token.approve(&alice, &spender, &100, &1_000_000);
+
+    // Spender moves all of Alice's shares to Bob.
+    h.token.transfer_from(&spender, &alice, &bob, &100);
+
+    // Bob must not inherit Alice's pre-transfer accrued dividend.
+    assert_eq!(h.token.pending_dividend(&bob), 0);
+    // Alice keeps her 100 stroop accrual.
+    assert_eq!(h.token.pending_dividend(&alice), 100);
+
+    // A dividend declared now accrues to Bob (current holder), not Alice.
+    h.token.deposit_dividend(&1_000);
+    assert_eq!(h.token.pending_dividend(&bob), 100);
+    assert_eq!(h.token.pending_dividend(&alice), 100); // unchanged
 }
