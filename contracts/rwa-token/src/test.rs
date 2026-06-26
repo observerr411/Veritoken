@@ -270,3 +270,17 @@ fn test_non_deployer_cannot_reinitialize() {
     );
     assert!(result.is_err());
 }
+
+#[test]
+fn test_mint_twice_same_address_holder_count_is_one() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+
+    h.token.mint(&user, &1_000);
+    h.token.mint(&user, &500);
+
+    assert_eq!(h.compliance.holder_count(), 1);
+    assert_eq!(h.token.balance(&user), 1_500);
+    assert_eq!(h.token.total_supply(), 1_500);
+}
