@@ -533,7 +533,7 @@ impl InvoiceToken {
             .unwrap();
         let client = ComplianceEngineClient::new(env, &engine);
         if !client.can_transfer(from, to, &amount) {
-            panic!("transfer rejected by compliance engine");
+            panic_with_error!(env, InvoiceError::TransferBlocked);
         }
     }
 
@@ -562,28 +562,6 @@ impl InvoiceToken {
                 amount: 0,
                 expiration_ledger: 0,
             })
-    }
-
-    fn require_compliance(env: &Env, from: &Address, to: &Address, amount: i128) {
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .unwrap();
-        let client = ComplianceEngineClient::new(env, &engine);
-        if !client.can_transfer(from, to, &amount) {
-            panic_with_error!(env, InvoiceError::TransferBlocked);
-        }
-    }
-
-    fn register_holder(env: &Env, addr: &Address) {
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .unwrap();
-        let client = ComplianceEngineClient::new(env, &engine);
-        client.register_holder(addr);
     }
 }
 
