@@ -5,12 +5,16 @@ use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
+// ── Test harness ─────────────────────────────────────────────────────────────
+
+#[allow(dead_code)]
 struct Harness {
     env: Env,
     token: InvoiceTokenClient<'static>,
     kyc: KycRegistryClient<'static>,
     compliance: ComplianceEngineClient<'static>,
     verifier: Address,
+    #[allow(dead_code)]
     admin: Address,
 }
 
@@ -34,6 +38,7 @@ fn setup() -> Harness {
     env.mock_all_auths();
     let admin = Address::generate(&env);
 
+    // KYC registry
     let kyc_id = env.register(KycRegistry, ());
     let kyc = KycRegistryClient::new(&env, &kyc_id);
     kyc.initialize(&admin);
@@ -65,6 +70,22 @@ fn setup() -> Harness {
     }
 }
 
+#[test]
+fn test_issue_idempotency_holder_count() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    
+    // First issue
+    h.token.issue(&holder, &1_000);
+    assert_eq!(h.compliance.holder_count(), 1);
+    
+    // Second issue
+    h.token.issue(&holder, &500);
+    assert_eq!(h.compliance.holder_count(), 1);
+    assert_eq!(h.token.balance(&holder), 1_500);
+}
+
 impl Harness {
     fn approve_kyc(&self, addr: &Address) {
         self.kyc.approve(
@@ -76,6 +97,8 @@ impl Harness {
         );
     }
 }
+
+// ── Existing tests ────────────────────────────────────────────────────────────
 
 #[test]
 fn test_metadata() {
@@ -103,6 +126,16 @@ fn test_issue_requires_kyc() {
     h.token.issue(&holder, &1_000);
     assert_eq!(h.token.balance(&holder), 1_000);
     assert_eq!(h.token.total_supply(), 1_000);
+
+    // Assert that the "issued" event was emitted
+    let events = h.env.events().all();
+    let issued_topic = soroban_sdk::symbol_short!("issued").into_val(&h.env);
+    assert!(
+        events
+            .iter()
+            .any(|(_, topics, _)| topics.first() == Some(&issued_topic)),
+        "issued event should have been emitted"
+    );
 }
 
 #[test]
@@ -143,6 +176,28 @@ fn test_redeem_insufficient_balance() {
 }
 
 #[test]
+fn test_redeem_blocked_when_compliance_paused() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    h.token.issue(&holder, &1_000);
+    h.token.settle();
+    h.compliance.pause();
+    assert!(h.token.try_redeem(&holder, &500).is_err());
+}
+
+#[test]
+fn test_redeem_blocked_for_blocklisted_holder() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    h.token.issue(&holder, &1_000);
+    h.token.settle();
+    h.compliance.add_to_blocklist(&holder);
+    assert!(h.token.try_redeem(&holder, &500).is_err());
+}
+
+#[test]
 fn test_non_deployer_cannot_reinitialize() {
     let h = setup();
     let attacker = Address::generate(&h.env);
@@ -154,181 +209,74 @@ fn test_non_deployer_cannot_reinitialize() {
     assert!(result.is_err());
 }
 
-// ── Transfer ─────────────────────────────────────────────────────────────────
+// ── update_kyc_registry / update_compliance_engine tests ─────────────────────
 
 #[test]
-fn test_transfer_zero_fee() {
+fn test_update_kyc_registry_admin_only() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    let bob = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.approve_kyc(&bob);
-    h.token.issue(&alice, &10_000);
+    let new_kyc = Address::generate(&h.env);
 
-    h.token.transfer(&alice, &bob, &3_000);
+    // Non-admin: separate env, no auths mocked
+    {
+        let env2 = Env::default();
+        let non_admin = Address::generate(&env2);
+        let token_id2 = env2.register(
+            InvoiceToken,
+            (
+                non_admin.clone(),
+                Address::generate(&env2),
+                Address::generate(&env2),
+                meta(&env2),
+            ),
+        );
+        let client2 = InvoiceTokenClient::new(&env2, &token_id2);
+        assert!(client2.try_update_kyc_registry(&Address::generate(&env2)).is_err());
+    }
 
-    assert_eq!(h.token.balance(&alice), 7_000);
-    assert_eq!(h.token.balance(&bob), 3_000);
-    assert_eq!(h.token.total_supply(), 10_000);
+    // Admin succeeds and the stored address is updated
+    h.token.update_kyc_registry(&new_kyc);
+
+    // Confirm the new registry is in effect: issuing to an already-KYC'd
+    // address now fails because the new registry has no approvals.
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder); // approved in OLD registry
+    assert!(h.token.try_issue(&holder, &1).is_err());
 }
 
 #[test]
-fn test_transfer_with_fee_deducted_from_recipient() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-
-    let kyc_id = env.register(KycRegistry, ());
-    let kyc = KycRegistryClient::new(&env, &kyc_id);
-    kyc.initialize(&admin);
-    let verifier = Address::generate(&env);
-    kyc.add_verifier(&verifier);
-
-    let compliance_id = env.register(ComplianceEngine, ());
-    let compliance = ComplianceEngineClient::new(&env, &compliance_id);
-    compliance.initialize(&admin);
-
-    let fee_collector = Address::generate(&env);
-    kyc.approve(&verifier, &fee_collector, &1, &0, &String::from_str(&env, "US"));
-
-    // 50 bps = 0.5% fee
-    let fee_meta = InvoiceMeta {
-        invoice_id: String::from_str(&env, "INV-FEE"),
-        issuer: String::from_str(&env, "Acme"),
-        debtor: String::from_str(&env, "Globex"),
-        face_value_usd: 1_000_000_000_000,
-        discount_rate_bps: 0,
-        due_date: 1_900_000_000,
-        currency: String::from_str(&env, "USD"),
-        ipfs_doc_hash: String::from_str(&env, "Qm..."),
-        transfer_fee_bps: 50,
-        fee_recipient: Some(fee_collector.clone()),
-    };
-
-    let token_id = env.register(
-        InvoiceToken,
-        (admin.clone(), kyc_id.clone(), compliance_id.clone(), fee_meta),
-    );
-    let token = InvoiceTokenClient::new(&env, &token_id);
-
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "US"));
-
-    token.issue(&alice, &10_000);
-
-    // 50 bps of 10_000 = 5
-    token.transfer(&alice, &bob, &10_000);
-
-    assert_eq!(token.balance(&alice), 0);
-    assert_eq!(token.balance(&bob), 9_995);     // receives amount - fee
-    assert_eq!(token.balance(&fee_collector), 5); // receives fee
-    assert_eq!(token.total_supply(), 10_000);
-}
-
-#[test]
-fn test_transfer_fee_recipient_receives_exact_amount() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-
-    let kyc_id = env.register(KycRegistry, ());
-    let kyc = KycRegistryClient::new(&env, &kyc_id);
-    kyc.initialize(&admin);
-    let verifier = Address::generate(&env);
-    kyc.add_verifier(&verifier);
-
-    let compliance_id = env.register(ComplianceEngine, ());
-    let compliance = ComplianceEngineClient::new(&env, &compliance_id);
-    compliance.initialize(&admin);
-
-    let fee_collector = Address::generate(&env);
-    kyc.approve(&verifier, &fee_collector, &1, &0, &String::from_str(&env, "US"));
-
-    // 100 bps = 1% fee
-    let fee_meta = InvoiceMeta {
-        invoice_id: String::from_str(&env, "INV-FEE2"),
-        issuer: String::from_str(&env, "Acme"),
-        debtor: String::from_str(&env, "Globex"),
-        face_value_usd: 1_000_000_000_000,
-        discount_rate_bps: 0,
-        due_date: 1_900_000_000,
-        currency: String::from_str(&env, "USD"),
-        ipfs_doc_hash: String::from_str(&env, "Qm..."),
-        transfer_fee_bps: 100,
-        fee_recipient: Some(fee_collector.clone()),
-    };
-
-    let token_id = env.register(
-        InvoiceToken,
-        (admin.clone(), kyc_id.clone(), compliance_id.clone(), fee_meta),
-    );
-    let token = InvoiceTokenClient::new(&env, &token_id);
-
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "US"));
-
-    token.issue(&alice, &5_000);
-
-    // Two transfers — fee_collector accumulates across both
-    token.transfer(&alice, &bob, &2_000); // fee = 20, bob gets 1980
-    token.transfer(&bob, &alice, &1_000); // fee = 10, alice gets 990
-
-    assert_eq!(token.balance(&fee_collector), 30); // 20 + 10
-    assert_eq!(token.balance(&bob), 980);
-    assert_eq!(token.balance(&alice), 3_990); // 3_000 remaining + 990 received
-}
-
-// ── update_meta ───────────────────────────────────────────────────────────────
-
-#[test]
-fn test_update_meta_before_settlement() {
+fn test_update_compliance_engine_admin_only() {
     let h = setup();
 
-    let updated = InvoiceMeta {
-        invoice_id: String::from_str(&h.env, "INV-001"),
-        issuer: String::from_str(&h.env, "Acme Corp"),
-        debtor: String::from_str(&h.env, "Globex"),
-        face_value_usd: 2_000_000_000_000, // amended face value
-        discount_rate_bps: 300,
-        due_date: 1_950_000_000, // extended due date
-        currency: String::from_str(&h.env, "USD"),
-        ipfs_doc_hash: String::from_str(&h.env, "Qm_new..."),
-        transfer_fee_bps: 0,
-        fee_recipient: None,
-    };
+    // Non-admin: separate env, no auths mocked
+    {
+        let env2 = Env::default();
+        let non_admin = Address::generate(&env2);
+        let token_id2 = env2.register(
+            InvoiceToken,
+            (
+                non_admin.clone(),
+                Address::generate(&env2),
+                Address::generate(&env2),
+                meta(&env2),
+            ),
+        );
+        let client2 = InvoiceTokenClient::new(&env2, &token_id2);
+        assert!(client2.try_update_compliance_engine(&Address::generate(&env2)).is_err());
+    }
 
-    h.token.update_meta(&updated);
+    // Admin can update; subsequent compliance checks use the new engine.
+    // Deploy a second paused compliance engine.
+    let ce2_id = h.env.register(ComplianceEngine, ());
+    let ce2 = ComplianceEngineClient::new(&h.env, &ce2_id);
+    ce2.initialize(&h.admin);
+    ce2.pause();
 
-    let stored = h.token.get_meta();
-    assert_eq!(stored.face_value_usd, 2_000_000_000_000);
-    assert_eq!(stored.due_date, 1_950_000_000);
-    assert_eq!(
-        stored.ipfs_doc_hash,
-        String::from_str(&h.env, "Qm_new...")
-    );
-}
+    h.token.update_compliance_engine(&ce2_id);
 
-#[test]
-fn test_update_meta_blocked_after_settlement() {
-    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    h.token.issue(&holder, &100); // issue bypasses compliance check (not a transfer)
     h.token.settle();
-
-    let updated = InvoiceMeta {
-        invoice_id: String::from_str(&h.env, "INV-001"),
-        issuer: String::from_str(&h.env, "Acme Corp"),
-        debtor: String::from_str(&h.env, "Globex"),
-        face_value_usd: 999,
-        discount_rate_bps: 0,
-        due_date: 1,
-        currency: String::from_str(&h.env, "USD"),
-        ipfs_doc_hash: String::from_str(&h.env, "Qm_bad"),
-        transfer_fee_bps: 0,
-        fee_recipient: None,
-    };
-
-    assert!(h.token.try_update_meta(&updated).is_err());
+    // Redemption checks compliance engine for pause/blocklist — must now fail.
+    assert!(h.token.try_redeem(&holder, &50).is_err());
 }

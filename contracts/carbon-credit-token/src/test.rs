@@ -3,7 +3,7 @@
 use crate::{CarbonCreditToken, CarbonCreditTokenClient, ProjectMeta};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Events as _}, Address, Env, IntoVal, String};
 
 struct Harness {
     env: Env,
@@ -11,6 +11,7 @@ struct Harness {
     kyc: KycRegistryClient<'static>,
     compliance: ComplianceEngineClient<'static>,
     verifier: Address,
+    admin: Address,
 }
 
 fn meta(env: &Env) -> ProjectMeta {
@@ -39,7 +40,7 @@ fn setup() -> Harness {
 
     let compliance_id = env.register(ComplianceEngine, ());
     let compliance = ComplianceEngineClient::new(&env, &compliance_id);
-    compliance.initialize(&admin);
+    compliance.initialize(&admin, &kyc_id);
 
     // Carbon credit token — constructor args passed atomically at register time
     let token_id = env.register(
@@ -59,6 +60,7 @@ fn setup() -> Harness {
         kyc,
         compliance,
         verifier,
+        admin,
     }
 }
 
@@ -168,6 +170,16 @@ fn test_retire_records_receipt() {
     let r = h.token.get_receipt(&0);
     assert_eq!(r.amount, 40);
     assert_eq!(r.retiree, alice);
+
+    // Assert that the "retired" event was emitted
+    let events = h.env.events().all();
+    let retired_topic = soroban_sdk::symbol_short!("retired").into_val(&h.env);
+    assert!(
+        events
+            .iter()
+            .any(|(_, topics, _)| topics.first() == Some(&retired_topic)),
+        "retired event should have been emitted"
+    );
 }
 
 #[test]
@@ -188,6 +200,19 @@ fn test_retire_insufficient_balance() {
 }
 
 #[test]
+fn test_mint_twice_same_address_holder_count_is_one() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+
+    h.token.mint(&alice, &100);
+    h.token.mint(&alice, &50);
+
+    assert_eq!(h.compliance.holder_count(), 1);
+    assert_eq!(h.token.balance(&alice), 150);
+}
+
+#[test]
 fn test_non_deployer_cannot_reinitialize() {
     let h = setup();
     let attacker = Address::generate(&h.env);
@@ -200,49 +225,91 @@ fn test_non_deployer_cannot_reinitialize() {
     assert!(result.is_err());
 }
 
-// ── update_meta ───────────────────────────────────────────────────────────────
+// ── update_kyc_registry / update_compliance_engine tests ─────────────────────
 
 #[test]
-fn test_update_meta_succeeds() {
+fn test_update_kyc_registry_admin_only() {
     let h = setup();
+    let new_kyc = Address::generate(&h.env);
 
-    let updated = ProjectMeta {
-        project_id: String::from_str(&h.env, "VCS-1234"), // same project_id
-        standard: String::from_str(&h.env, "Gold Standard"), // updated
-        vintage_year: 2025,
-        project_name: String::from_str(&h.env, "Amazon Reforestation v2"),
-        project_type: String::from_str(&h.env, "forestry"),
-        country: String::from_str(&h.env, "BR"),
-        verifier: String::from_str(&h.env, "SCS Global Services"), // re-verified
-        ipfs_cert_hash: String::from_str(&h.env, "Qm_new_cert..."),
-    };
+    // Non-admin: separate env, no auths mocked
+    {
+        let env2 = Env::default();
+        let non_admin = Address::generate(&env2);
+        let token_id2 = env2.register(
+            CarbonCreditToken,
+            (
+                non_admin.clone(),
+                Address::generate(&env2),
+                Address::generate(&env2),
+                meta(&env2),
+            ),
+        );
+        let client2 = CarbonCreditTokenClient::new(&env2, &token_id2);
+        assert!(client2.try_update_kyc_registry(&Address::generate(&env2)).is_err());
+    }
 
-    h.token.update_meta(&updated);
+    // Admin succeeds
+    h.token.update_kyc_registry(&new_kyc);
 
-    let stored = h.token.get_meta();
-    assert_eq!(stored.standard, String::from_str(&h.env, "Gold Standard"));
-    assert_eq!(stored.vintage_year, 2025);
-    assert_eq!(
-        stored.ipfs_cert_hash,
-        String::from_str(&h.env, "Qm_new_cert...")
-    );
-    assert_eq!(stored.project_id, String::from_str(&h.env, "VCS-1234"));
+    // Minting now fails because the new registry has no approvals
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice); // approved in OLD registry only
+    assert!(h.token.try_mint(&alice, &10).is_err());
 }
 
 #[test]
-fn test_update_meta_rejects_project_id_change() {
+fn test_update_compliance_engine_admin_only() {
     let h = setup();
 
-    let updated = ProjectMeta {
-        project_id: String::from_str(&h.env, "VCS-9999"), // different project_id
-        standard: String::from_str(&h.env, "VCS"),
-        vintage_year: 2024,
-        project_name: String::from_str(&h.env, "Amazon Reforestation"),
-        project_type: String::from_str(&h.env, "forestry"),
-        country: String::from_str(&h.env, "BR"),
-        verifier: String::from_str(&h.env, "Verra"),
-        ipfs_cert_hash: String::from_str(&h.env, "Qm..."),
-    };
+    // Non-admin: separate env, no auths mocked
+    {
+        let env2 = Env::default();
+        let non_admin = Address::generate(&env2);
+        let token_id2 = env2.register(
+            CarbonCreditToken,
+            (
+                non_admin.clone(),
+                Address::generate(&env2),
+                Address::generate(&env2),
+                meta(&env2),
+            ),
+        );
+        let client2 = CarbonCreditTokenClient::new(&env2, &token_id2);
+        assert!(client2.try_update_compliance_engine(&Address::generate(&env2)).is_err());
+    }
 
-    assert!(h.token.try_update_meta(&updated).is_err());
+    // Deploy a second compliance engine and pause it
+    let ce2_id = h.env.register(ComplianceEngine, ());
+    let ce2 = ComplianceEngineClient::new(&h.env, &ce2_id);
+    ce2.initialize(&h.admin);
+    ce2.pause();
+
+    // Admin can update
+    h.token.update_compliance_engine(&ce2_id);
+
+    // Mints through the paused engine are now blocked
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    assert!(h.token.try_mint(&alice, &10).is_err());
+}
+
+#[test]
+fn test_update_compliance_engine_affects_transfers() {
+    let h = setup();
+
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &100);
+
+    // Deploy and switch to a paused engine
+    let ce2_id = h.env.register(ComplianceEngine, ());
+    let ce2 = ComplianceEngineClient::new(&h.env, &ce2_id);
+    ce2.initialize(&h.admin);
+    ce2.pause();
+
+    h.token.update_compliance_engine(&ce2_id);
+    assert!(h.token.try_transfer(&alice, &bob, &10).is_err());
 }

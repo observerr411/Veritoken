@@ -65,6 +65,26 @@ Look for issues labelled [`good first issue`](https://github.com/abore9769/Verit
 
 ---
 
+## Versioning
+
+Veritoken uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Version numbers apply to the contract suite as a whole.
+
+| Change type | Version bump |
+|---|---|
+| Breaking change to a public contract function (rename, remove, change signature) | **Major** (e.g. `0.1.0` → `1.0.0`) |
+| New public function added to any contract | **Minor** (e.g. `0.1.0` → `0.2.0`) |
+| Bug fix with no ABI change | **Patch** (e.g. `0.1.0` → `0.1.1`) |
+
+When opening a PR that bumps the version:
+
+1. Update the `version` field in every `contracts/*/Cargo.toml`
+2. Add an entry to `CHANGELOG.md` under a new `[x.y.z]` section following the [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format
+3. After the PR merges, tag the commit: `git tag vx.y.z && git push origin vx.y.z`
+
+Breaking changes (major bumps) must be discussed in an issue before implementation.
+
+---
+
 ## Questions
 
 Open an issue or start a discussion on GitHub. For significant changes, open an issue first to align on approach before writing code.

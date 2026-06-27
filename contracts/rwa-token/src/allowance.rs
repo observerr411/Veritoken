@@ -1,6 +1,9 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+
 use soroban_sdk::{Address, Env};
 
 use crate::storage_types::{AllowanceKey, AllowanceValue, DataKey};
+use crate::RwaError;
 
 pub fn read_allowance(env: &Env, from: Address, spender: Address) -> AllowanceValue {
     let key = DataKey::Allowance(AllowanceKey {
@@ -36,7 +39,7 @@ pub fn write_allowance(
     expiration_ledger: u32,
 ) {
     if amount > 0 && expiration_ledger < env.ledger().sequence() {
-        panic!("expiration_ledger is in the past");
+        soroban_sdk::panic_with_error!(env, RwaError::AllowanceExpired);
     }
     let key = DataKey::Allowance(AllowanceKey {
         from: from.clone(),
@@ -59,7 +62,7 @@ pub fn write_allowance(
 pub fn spend_allowance(env: &Env, from: Address, spender: Address, amount: i128) {
     let allowance = read_allowance(env, from.clone(), spender.clone());
     if allowance.amount < amount {
-        panic!("insufficient allowance");
+        soroban_sdk::panic_with_error!(env, RwaError::InsufficientAllowance);
     }
     let new_amount = allowance.amount - amount;
     write_allowance(env, from, spender, new_amount, allowance.expiration_ledger);

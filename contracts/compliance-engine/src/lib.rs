@@ -1,13 +1,25 @@
 #![no_std]
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
+    Address, Env, Vec,
+};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ComplianceError {
+    AlreadyInitialized = 1,
+}
 
 #[contracttype]
 pub enum DataKey {
     Admin,
+    KycRegistry,
     Rules,
     Blocklist,
     MaxTransfer,
@@ -36,11 +48,15 @@ pub struct ComplianceEngine;
 
 #[contractimpl]
 impl ComplianceEngine {
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn initialize(env: Env, admin: Address, kyc_registry: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            panic_with_error!(env, ComplianceError::AlreadyInitialized);
         }
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::KycRegistry, &kyc_registry);
         let default_rules = ComplianceRules {
             max_transfer_amount: 0,
             min_holding_period: 0,
@@ -58,16 +74,19 @@ impl ComplianceEngine {
 
     pub fn set_rules(env: Env, rules: ComplianceRules) {
         Self::require_admin(&env);
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage().instance().set(&DataKey::Rules, &rules);
         env.events().publish((symbol_short!("rules_set"),), ());
     }
 
     pub fn get_rules(env: Env) -> ComplianceRules {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage().instance().get(&DataKey::Rules).unwrap()
     }
 
     pub fn add_to_blocklist(env: Env, addr: Address) {
         Self::require_admin(&env);
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let mut list = Self::blocklist(&env);
         if !list.contains(&addr) {
             list.push_back(addr.clone());
@@ -78,6 +97,7 @@ impl ComplianceEngine {
 
     pub fn remove_from_blocklist(env: Env, addr: Address) {
         Self::require_admin(&env);
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let list = Self::blocklist(&env);
         let mut new_list: Vec<Address> = Vec::new(&env);
         for a in list.iter() {
@@ -89,11 +109,13 @@ impl ComplianceEngine {
     }
 
     pub fn is_blocklisted(env: Env, addr: Address) -> bool {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::blocklist(&env).contains(&addr)
     }
 
     pub fn pause(env: Env) {
         Self::require_admin(&env);
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let mut rules: ComplianceRules = env.storage().instance().get(&DataKey::Rules).unwrap();
         rules.paused = true;
         env.storage().instance().set(&DataKey::Rules, &rules);
@@ -102,6 +124,7 @@ impl ComplianceEngine {
 
     pub fn unpause(env: Env) {
         Self::require_admin(&env);
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let mut rules: ComplianceRules = env.storage().instance().get(&DataKey::Rules).unwrap();
         rules.paused = false;
         env.storage().instance().set(&DataKey::Rules, &rules);
@@ -110,15 +133,10 @@ impl ComplianceEngine {
 
     // ── Transfer validation ──────────────────────────────────────────────────
 
-    /// Called by rwa-token before every transfer. Returns true if the
+    /// Called by asset tokens before every transfer. Returns true if the
     /// transfer is compliant with all configured rules.
-    /// Called by asset tokens to validate a transfer.
-    ///
-    /// The minimum holding period is measured from the holder's most recent receipt of
-    /// tokens (mint or transfer-in). A new receipt resets the holder's lockup clock for
-    /// all of their tokens, so newly received balances cannot bypass the holding period
-    /// by relying on an earlier acquisition time.
     pub fn can_transfer(env: Env, from: Address, to: Address, amount: i128) -> bool {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let rules: ComplianceRules = env.storage().instance().get(&DataKey::Rules).unwrap();
 
         if rules.paused {
@@ -128,6 +146,20 @@ impl ComplianceEngine {
         let blocklist = Self::blocklist(&env);
         if blocklist.contains(&from) || blocklist.contains(&to) {
             return false;
+        }
+
+        if rules.require_same_jurisdiction {
+            let kyc_registry: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::KycRegistry)
+                .unwrap();
+            let kyc = kyc_iface::KycRegistryClient::new(&env, &kyc_registry);
+            let from_record = kyc.get_record(&from);
+            let to_record = kyc.get_record(&to);
+            if from_record.jurisdiction != to_record.jurisdiction {
+                return false;
+            }
         }
 
         if rules.max_transfer_amount > 0 && amount > rules.max_transfer_amount {
@@ -159,6 +191,7 @@ impl ComplianceEngine {
 
     /// Called by rwa-token after a mint or transfer to register a new holder.
     pub fn register_holder(env: Env, addr: Address) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let key = DataKey::HolderSince(addr.clone());
         let is_new = !env.storage().persistent().has(&key);
         env.storage()
@@ -179,6 +212,7 @@ impl ComplianceEngine {
 
     /// Called by rwa-token after a transfer or burn that removes the last token from a holder.
     pub fn unregister_holder(env: Env, addr: Address) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let key = DataKey::HolderSince(addr.clone());
         if env.storage().persistent().has(&key) {
             env.storage().persistent().remove(&key);
@@ -195,6 +229,7 @@ impl ComplianceEngine {
     }
 
     pub fn holder_count(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
             .instance()
             .get(&DataKey::HolderCount)
@@ -204,7 +239,11 @@ impl ComplianceEngine {
     // ── Internals ────────────────────────────────────────────────────────────
 
     fn require_admin(env: &Env) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin must be set");
         admin.require_auth();
     }
 
@@ -213,5 +252,34 @@ impl ComplianceEngine {
             .instance()
             .get(&DataKey::Blocklist)
             .unwrap_or_else(|| Vec::new(env))
+    }
+}
+
+mod kyc_iface {
+    use soroban_sdk::{contractclient, contracttype, Address, String};
+
+    #[contracttype]
+    #[derive(Clone)]
+    pub struct KycRecord {
+        pub status: KycStatus,
+        pub verifier: Address,
+        pub tier: u32,
+        pub expiry: u64,
+        pub jurisdiction: String,
+    }
+
+    #[contracttype]
+    #[derive(Clone)]
+    pub enum KycStatus {
+        Pending,
+        Approved,
+        Rejected,
+        Revoked,
+    }
+
+    #[contractclient(name = "KycRegistryClient")]
+    #[allow(dead_code)]
+    pub trait KycRegistry {
+        fn get_record(env: soroban_sdk::Env, addr: Address) -> KycRecord;
     }
 }
