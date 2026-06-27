@@ -47,6 +47,13 @@ impl RwaToken {
         kyc_registry: Address,
         compliance_engine: Address,
     ) {
+        // Validate asset_type
+        let valid_types = ["invoice", "property", "carbon_credit"];
+        let asset_type_str = asset_type.as_ref();
+        if !valid_types.contains(&asset_type_str) {
+            panic!("invalid asset_type: must be 'invoice', 'property', or 'carbon_credit'");
+        }
+
         admin::write_admin(&env, &admin);
         metadata::write_metadata(&env, decimal, name, symbol);
         metadata::write_asset_type(&env, asset_type);

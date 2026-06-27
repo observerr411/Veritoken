@@ -286,3 +286,26 @@ fn test_mint_twice_same_address_holder_count_is_one() {
     assert_eq!(h.token.balance(&user), 1_500);
     assert_eq!(h.token.total_supply(), 1_500);
 }
+
+#[test]
+#[should_panic(expected = "invalid asset_type: must be 'invoice', 'property', or 'carbon_credit'")]
+fn test_invalid_asset_type() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let kyc_id = env.register(KycRegistry, ());
+    let compliance_id = env.register(ComplianceEngine, ());
+
+    // Try to register token with invalid asset type
+    let _ = env.register(
+        RwaToken,
+        (
+            admin,
+            7u32,
+            String::from_str(&env, "Bad Token"),
+            String::from_str(&env, "BAD"),
+            String::from_str(&env, "banana"),
+            kyc_id,
+            compliance_id,
+        ),
+    );
+}
