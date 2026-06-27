@@ -10,6 +10,9 @@ export default function KycPage() {
   const { } = useWallet();
   const { addToast } = useToast();
   const [lookup, setLookup] = useState("");
+  const [showAddressBookModal, setShowAddressBookModal] = useState(false);
+  const [addressBookLabel, setAddressBookLabel] = useState("");
+  const [pendingAddress, setPendingAddress] = useState("");
   const [approveForm, setApproveForm] = useState({
     subject: "",
     tier: "0",
@@ -40,6 +43,22 @@ export default function KycPage() {
     e.preventDefault();
     addToast(`KYC approved for ${approveForm.subject} at tier ${approveForm.tier}`, "success");
     setApproveForm({ subject: "", tier: "0", jurisdiction: "", expiry_days: "365" });
+  };
+
+  const handleAddToAddressBook = (address: string) => {
+    setPendingAddress(address);
+    setAddressBookLabel("");
+    setShowAddressBookModal(true);
+  };
+
+  const confirmAddToAddressBook = () => {
+    if (addressBookLabel.trim()) {
+      addEntry(pendingAddress, addressBookLabel);
+      setApproveForm((f) => ({ ...f, subject: pendingAddress }));
+      setShowAddressBookModal(false);
+      setAddressBookLabel("");
+      setPendingAddress("");
+    }
   };
 
   return (

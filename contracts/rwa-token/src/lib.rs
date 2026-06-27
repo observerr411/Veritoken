@@ -17,6 +17,9 @@ mod storage_types;
 #[cfg(test)]
 mod test;
 
+#[cfg(test)]
+mod sep41_compliance;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
