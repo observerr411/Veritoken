@@ -1,5 +1,8 @@
+import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { Icon } from "../components/ui";
+import { contracts } from "../lib/contracts/index";
+import { CONTRACT_IDS } from "../lib/stellar";
 
 const CARDS = [
   {
@@ -39,7 +42,50 @@ const STATS = [
   { label: "Test coverage", value: "40", sub: "passing tests" },
 ];
 
+interface TokenInfo {
+  assetType: string;
+  kycRegistry: string;
+  complianceEngine: string;
+  legalEntity: string;
+  governingLaw: string;
+  isin: string;
+}
+
+function TokenInfoRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+      <span className="muted" style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</span>
+      <span style={{ fontSize: "0.875rem", fontFamily: mono ? "monospace" : undefined, wordBreak: "break-all" }}>{value}</span>
+    </div>
+  );
+}
+
 export default function Dashboard() {
+  const [tokenInfo, setTokenInfo] = useState<TokenInfo | null>(null);
+  const [tokenInfoLoading, setTokenInfoLoading] = useState(false);
+  const [tokenInfoError, setTokenInfoError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!CONTRACT_IDS.rwaToken) return;
+    setTokenInfoLoading(true);
+    setTokenInfoError(null);
+    Promise.all([
+      contracts.rwa.assetType(),
+      contracts.rwa.kycRegistry(),
+      contracts.rwa.complianceEngine(),
+      contracts.rwa.getComplianceMetadata("legal_entity"),
+      contracts.rwa.getComplianceMetadata("governing_law"),
+      contracts.rwa.getComplianceMetadata("isin"),
+    ])
+      .then(([assetType, kycRegistry, complianceEngine, legalEntity, governingLaw, isin]) => {
+        setTokenInfo({ assetType, kycRegistry, complianceEngine, legalEntity, governingLaw, isin });
+      })
+      .catch((err: unknown) => {
+        setTokenInfoError(err instanceof Error ? err.message : "Failed to load token info");
+      })
+      .finally(() => setTokenInfoLoading(false));
+  }, []);
+
   return (
     <div>
       {/* Hero */}
@@ -81,6 +127,42 @@ export default function Dashboard() {
           </div>
         ))}
       </section>
+
+      {/* Token Info */}
+      {CONTRACT_IDS.rwaToken && (
+        <section className="card" style={{ marginBottom: "2.75rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.7rem", marginBottom: "1.25rem" }}>
+            <div style={styles.complianceIcon}>
+              <Icon.invoice size={22} />
+            </div>
+            <div>
+              <h2 style={{ fontSize: "1.05rem", fontWeight: 700 }}>Token Info</h2>
+              <p className="muted" style={{ fontSize: "0.85rem", marginTop: "0.2rem" }}>
+                On-chain compliance configuration for the deployed RWA token
+              </p>
+            </div>
+          </div>
+
+          {tokenInfoLoading && (
+            <p className="muted" style={{ fontSize: "0.9rem" }}>Loading token info…</p>
+          )}
+
+          {tokenInfoError && !tokenInfoLoading && (
+            <p style={{ fontSize: "0.875rem", color: "var(--error, #f87171)" }}>{tokenInfoError}</p>
+          )}
+
+          {tokenInfo && !tokenInfoLoading && (
+            <div style={styles.tokenGrid}>
+              <TokenInfoRow label="Asset Type" value={tokenInfo.assetType || "—"} />
+              <TokenInfoRow label="KYC Registry" value={tokenInfo.kycRegistry || "—"} mono />
+              <TokenInfoRow label="Compliance Engine" value={tokenInfo.complianceEngine || "—"} mono />
+              <TokenInfoRow label="Legal Entity" value={tokenInfo.legalEntity || "—"} />
+              <TokenInfoRow label="Governing Law" value={tokenInfo.governingLaw || "—"} />
+              <TokenInfoRow label="ISIN" value={tokenInfo.isin || "—"} mono />
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Asset modules */}
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "0.5rem 0 1.1rem" }}>
@@ -180,6 +262,11 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "0.85rem",
     fontWeight: 600,
     color: "var(--accent-2)",
+  },
+  tokenGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+    gap: "1rem",
   },
   compliance: { marginTop: "2.75rem" },
   complianceIcon: {

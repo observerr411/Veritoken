@@ -67,6 +67,13 @@ export interface ComplianceRules {
   paused: boolean;
 }
 
+export interface ContractEvent {
+  type: string;
+  amount: string;
+  counterparty: string;
+  timestamp: string;
+}
+
 export interface WalletState {
   address: string | null;
   network: string;

@@ -16,6 +16,7 @@ import { ComplianceEngineClient } from "./complianceEngine";
 import { InvoiceTokenClient } from "./invoiceToken";
 import { PropertyTokenClient } from "./propertyToken";
 import { CarbonTokenClient } from "./carbonToken";
+import { RwaTokenClient } from "./rwaToken";
 
 // Re-export client classes for typing and isolated instantiation in tests.
 export { KycRegistryClient } from "./kycRegistry";
@@ -23,6 +24,7 @@ export { ComplianceEngineClient } from "./complianceEngine";
 export { InvoiceTokenClient } from "./invoiceToken";
 export { PropertyTokenClient } from "./propertyToken";
 export { CarbonTokenClient } from "./carbonToken";
+export { RwaTokenClient } from "./rwaToken";
 export type { SignTx } from "./base";
 
 // ── Singleton ─────────────────────────────────────────────────────────────────
@@ -42,4 +44,7 @@ export const contracts = {
 
   /** Carbon credit token — verified tonne retirement. */
   carbon: new CarbonTokenClient(CONTRACT_IDS.carbonToken, server),
+
+  /** RWA base token — compliance metadata, asset type, registry/engine addresses. */
+  rwa: new RwaTokenClient(CONTRACT_IDS.rwaToken, server),
 } as const;

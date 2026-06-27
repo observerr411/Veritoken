@@ -27,6 +27,7 @@ export const CONTRACT_IDS = {
   invoiceToken: import.meta.env.VITE_INVOICE_TOKEN_ID ?? "",
   propertyToken: import.meta.env.VITE_PROPERTY_TOKEN_ID ?? "",
   carbonToken: import.meta.env.VITE_CARBON_TOKEN_ID ?? "",
+  rwaToken: import.meta.env.VITE_RWA_TOKEN_ID ?? "",
 };
 
 // Error code tables matching each contract's #[contracterror] enum discriminants.

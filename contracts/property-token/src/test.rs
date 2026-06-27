@@ -318,6 +318,19 @@ fn test_get_holders_pagination() {
     assert_eq!(h.token.get_holders(&10, &2).len(), 0);
 }
 
+#[test]
+fn test_transfer_rejects_recipient_below_required_tier() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    // alice has tier 1 (meets requirement), bob has tier 0 (below requirement)
+    h.approve_kyc_with_tier(&alice, 1);
+    h.approve_kyc_with_tier(&bob, 0);
+    h.token.mint(&alice, &100);
+    // Transfer to bob must fail because his tier (0) is below kyc_tier_required (1)
+    assert!(h.token.try_transfer(&alice, &bob, &50).is_err());
+}
+
 // ── update_kyc_registry / update_compliance_engine tests ─────────────────────
 
 #[test]
