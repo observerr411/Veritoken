@@ -169,6 +169,20 @@ impl PropertyToken {
             .expect("property meta must be set")
     }
 
+    pub fn update_meta(env: Env, new_meta: PropertyMeta) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        Self::require_admin(&env);
+        let current = Self::get_meta(env.clone());
+        // Cannot change structural fields
+        if new_meta.property_id != current.property_id || new_meta.total_shares != current.total_shares {
+            panic!("Cannot change property_id or total_shares");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::PropertyMeta, &new_meta);
+        env.events().publish((symbol_short!("meta_upd"),), ());
+    }
+
     pub fn name(env: Env) -> String {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         String::from_str(&env, "Veritoken Property")

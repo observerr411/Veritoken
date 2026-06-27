@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use crate::{InvoiceMeta, InvoiceToken, InvoiceTokenClient};
-use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
+use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{testutils::{Address as _, Events as _, Ledger as _}, Address, Env, IntoVal, String};
 
@@ -239,6 +239,39 @@ fn test_non_deployer_cannot_reinitialize() {
         .token
         .try_initialize(&attacker, &kyc_id, &ce_id, &meta(&h.env));
     assert!(result.is_err());
+}
+
+#[test]
+fn test_transfer_blocked_by_holding_period() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    // Configure a one-hour minimum holding period on the real compliance engine.
+    h.compliance.set_rules(&ComplianceRules {
+        max_transfer_amount: 0,
+        min_holding_period: 3600,
+        max_holders: 0,
+        require_same_jurisdiction: false,
+        paused: false,
+    });
+
+    // Issuing registers alice as a holder at the current ledger timestamp.
+    h.token.issue(&alice, &1_000);
+
+    // A transfer immediately after issuance is blocked: the holding period has
+    // not elapsed.
+    assert!(h.token.try_transfer(&alice, &bob, &100).is_err());
+
+    // Advance past the holding period; the transfer now succeeds.
+    h.env
+        .ledger()
+        .set_timestamp(h.env.ledger().timestamp() + 3601);
+    h.token.transfer(&alice, &bob, &100);
+    assert_eq!(h.token.balance(&bob), 100);
+    assert_eq!(h.token.balance(&alice), 900);
 }
 
 // ── update_kyc_registry / update_compliance_engine tests ─────────────────────

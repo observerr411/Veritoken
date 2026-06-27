@@ -175,6 +175,38 @@ fn test_retire_records_receipt() {
 }
 
 #[test]
+fn test_retire_blocked_when_paused() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &100);
+
+    // Pausing the compliance engine must freeze all token operations, including
+    // retirements (burns).
+    h.compliance.pause();
+    assert!(h
+        .token
+        .try_retire(
+            &alice,
+            &10,
+            &String::from_str(&h.env, "Acme Corp 2024 offset"),
+            &String::from_str(&h.env, "annual net-zero pledge"),
+        )
+        .is_err());
+
+    // After unpausing, the retirement goes through.
+    h.compliance.unpause();
+    let receipt = h.token.retire(
+        &alice,
+        &10,
+        &String::from_str(&h.env, "Acme Corp 2024 offset"),
+        &String::from_str(&h.env, "annual net-zero pledge"),
+    );
+    assert_eq!(receipt.amount, 10);
+    assert_eq!(h.token.balance(&alice), 90);
+}
+
+#[test]
 fn test_retire_insufficient_balance() {
     let h = setup();
     let alice = Address::generate(&h.env);

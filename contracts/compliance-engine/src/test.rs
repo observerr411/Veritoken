@@ -166,6 +166,90 @@ fn test_only_admin_can_set_rules() {
     assert!(res.is_err());
 }
 
+/// Deploys a mock KYC registry and a compliance engine linked to it, returning
+/// handles for jurisdiction-based tests.
+fn setup_with_kyc_registry() -> (
+    Env,
+    ComplianceEngineClient<'static>,
+    KycRegistryClient<'static>,
+    Address, // verifier
+    Address, // admin
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+
+    let kyc_id = env.register(KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+    let verifier = Address::generate(&env);
+    kyc.add_verifier(&verifier);
+
+    let ce_id = env.register(ComplianceEngine, ());
+    let ce = ComplianceEngineClient::new(&env, &ce_id);
+    ce.initialize(&admin, &kyc_id);
+
+    (env, ce, kyc, verifier, admin)
+}
+
+fn jurisdiction_rules(require_same_jurisdiction: bool) -> ComplianceRules {
+    ComplianceRules {
+        max_transfer_amount: 0,
+        min_holding_period: 0,
+        max_holders: 0,
+        require_same_jurisdiction,
+        paused: false,
+    }
+}
+
+#[test]
+fn test_same_jurisdiction_blocks_cross_border_transfer() {
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // alice = US, bob = GB
+    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "GB"));
+
+    ce.set_rules(&jurisdiction_rules(true));
+
+    // Cross-border transfer is blocked.
+    assert!(!ce.can_transfer(&alice, &bob, &100));
+}
+
+#[test]
+fn test_same_jurisdiction_allows_matching_jurisdictions() {
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // Both in the US.
+    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "US"));
+
+    ce.set_rules(&jurisdiction_rules(true));
+
+    // Same-jurisdiction transfer is allowed.
+    assert!(ce.can_transfer(&alice, &bob, &100));
+}
+
+#[test]
+fn test_same_jurisdiction_rule_disabled_allows_any() {
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // Different jurisdictions, but the rule is disabled.
+    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "GB"));
+
+    ce.set_rules(&jurisdiction_rules(false));
+
+    // With the rule off, cross-border transfers are allowed.
+    assert!(ce.can_transfer(&alice, &bob, &100));
+}
+
 #[test]
 fn test_require_same_jurisdiction_blocks_cross_jurisdiction_transfer() {
     let env = Env::default();

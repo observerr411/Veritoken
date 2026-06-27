@@ -1,35 +1,25 @@
-import {
-  Networks,
-  TransactionBuilder,
-  rpc,
-  StrKey,
-} from "@stellar/stellar-sdk";
+import { Networks, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
+import { useNetworkStore, getNetworkRpcUrl } from "./networkStore";
 
-export const NETWORK =
-  (import.meta.env.VITE_STELLAR_NETWORK as string) ?? "testnet";
+export const getNetwork = () => useNetworkStore.getState().network;
 
-/**
- * Validate if a string is a valid Stellar ED25519 public key (address).
- * Returns true if valid, false otherwise.
- */
-export function validateStellarAddress(address: string): boolean {
-  if (!address || typeof address !== "string") return false;
-  try {
-    return StrKey.isValidEd25519PublicKey(address);
-  } catch {
-    return false;
-  }
-}
+export const getRpcUrl = () => {
+  const network = getNetwork();
+  return getNetworkRpcUrl(network);
+};
 
-export const RPC_URL =
-  NETWORK === "mainnet"
-    ? "https://mainnet.sorobanrpc.com"
-    : "https://soroban-testnet.stellar.org";
+export const getNetworkPassphrase = () => {
+  const network = getNetwork();
+  return network === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
+};
 
-export const NETWORK_PASSPHRASE =
-  NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
+export const getServer = () => new rpc.Server(getRpcUrl(), { allowHttp: false });
 
-export const server = new rpc.Server(RPC_URL, { allowHttp: false });
+// For backwards compatibility, export these as functions that return the current values
+export const NETWORK = getNetwork();
+export const RPC_URL = getRpcUrl();
+export const NETWORK_PASSPHRASE = getNetworkPassphrase();
+export const server = getServer();
 
 export const CONTRACT_IDS = {
   kycRegistry: import.meta.env.VITE_KYC_REGISTRY_ID ?? "",
