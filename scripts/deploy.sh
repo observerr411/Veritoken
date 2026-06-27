@@ -22,8 +22,14 @@ WASM_DIR="target/wasm32-unknown-unknown/release"
 
 build_wasm() {
   local name="$1"
-  echo "--- Optimizing $name.wasm"
-  stellar contract optimize --wasm "$WASM_DIR/${name//-/_}.wasm" 2>/dev/null || true
+  local wasm_path="$WASM_DIR/${name//-/_}.wasm"
+  local size_before
+  size_before=$(wc -c < "$wasm_path")
+  echo "--- Optimizing $name.wasm (before: ${size_before} bytes)"
+  stellar contract optimize --wasm "$wasm_path"
+  local size_after
+  size_after=$(wc -c < "$wasm_path")
+  echo "    After: ${size_after} bytes (saved $((size_before - size_after)) bytes)"
 }
 
 build_wasm kyc_registry
@@ -46,7 +52,8 @@ CE_ID=$(stellar contract deploy \
   $SOURCE \
   --wasm "$WASM_DIR/compliance_engine.wasm" \
   -- \
-  --admin "$ADMIN_ADDR")
+  --admin "$ADMIN_ADDR" \
+  --kyc-registry "$KYC_ID")
 echo "    COMPLIANCE_ENGINE_ID=$CE_ID"
 
 # Asset tokens pass all constructor args atomically — no separate initialize call needed or possible.

@@ -1,0 +1,12 @@
+# Workspace-level Cargo configuration.
+#
+# Clippy lint enforcement strategy:
+#   - clippy::unwrap_used is denied in all non-test contract code via
+#     #![cfg_attr(not(test), deny(clippy::unwrap_used))] in each contract's lib.rs.
+#   - CI enforces this globally with: cargo clippy -- -D warnings -D clippy::unwrap_used
+#   - Storage reads that cannot fail at runtime use .expect("descriptive message")
+#     instead of bare .unwrap() to preserve the intent while surfacing better
+#     diagnostics if a contract is ever deployed in an unexpected state.
+
+[alias]
+lint = "clippy -- -D warnings -D clippy::unwrap_used"

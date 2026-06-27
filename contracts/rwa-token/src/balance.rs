@@ -1,9 +1,12 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+
 use soroban_sdk::{Address, Env};
 
 use crate::storage_types::{
     DataKey, BALANCE_BUMP_AMOUNT, BALANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT,
     INSTANCE_LIFETIME_THRESHOLD,
 };
+use crate::RwaError;
 
 pub fn read_balance(env: &Env, addr: Address) -> i128 {
     let key = DataKey::Balance(addr);
@@ -35,7 +38,7 @@ pub fn receive_balance(env: &Env, addr: Address, amount: i128) {
 pub fn spend_balance(env: &Env, addr: Address, amount: i128) {
     let balance = read_balance(env, addr.clone());
     if balance < amount {
-        panic!("insufficient balance");
+        soroban_sdk::panic_with_error!(env, RwaError::InsufficientBalance);
     }
     write_balance(env, addr, balance - amount);
 }

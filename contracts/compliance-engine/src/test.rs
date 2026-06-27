@@ -1,18 +1,25 @@
 #![cfg(test)]
 
 use crate::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
+use kyc_registry::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Address, Env,
+    Address, Env, String,
 };
 
 fn setup() -> (Env, ComplianceEngineClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
+
+    // A dummy KYC registry address suffices for tests that don't use jurisdiction checks.
+    let kyc_id = env.register(KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+
     let contract_id = env.register(ComplianceEngine, ());
     let client = ComplianceEngineClient::new(&env, &contract_id);
-    client.initialize(&admin);
+    client.initialize(&admin, &kyc_id);
     (env, client, admin)
 }
 
@@ -142,11 +149,59 @@ fn test_max_holders_blocks_new_holder_but_allows_existing_holder() {
 fn test_only_admin_can_set_rules() {
     let env = Env::default();
     let admin = Address::generate(&env);
+
+    let kyc_id = env.register(KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    // initialize KYC with admin auth
+    env.mock_all_auths();
+    kyc.initialize(&admin);
+
     let contract_id = env.register(ComplianceEngine, ());
     let client = ComplianceEngineClient::new(&env, &contract_id);
-    client.initialize(&admin);
+    client.initialize(&admin, &kyc_id);
 
-    // No auth mocked -> require_auth should fail
+    // Remove blanket auth — subsequent calls have no auth, so require_admin should fail
+    env.set_auths(&[]);
     let res = client.try_set_rules(&rules(0, 0, 0, true));
     assert!(res.is_err());
+}
+
+#[test]
+fn test_require_same_jurisdiction_blocks_cross_jurisdiction_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+
+    let kyc_id = env.register(KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+    let verifier = Address::generate(&env);
+    kyc.add_verifier(&verifier);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // alice = US, bob = GB
+    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "GB"));
+
+    let ce_id = env.register(ComplianceEngine, ());
+    let ce = ComplianceEngineClient::new(&env, &ce_id);
+    ce.initialize(&admin, &kyc_id);
+
+    ce.set_rules(&ComplianceRules {
+        max_transfer_amount: 0,
+        min_holding_period: 0,
+        max_holders: 0,
+        require_same_jurisdiction: true,
+        paused: false,
+    });
+
+    // Cross-jurisdiction: blocked
+    assert!(!ce.can_transfer(&alice, &bob, &100));
+
+    // Same jurisdiction: allowed
+    let carol = Address::generate(&env);
+    kyc.approve(&verifier, &carol, &1, &0, &String::from_str(&env, "US"));
+    assert!(ce.can_transfer(&alice, &carol, &100));
 }
