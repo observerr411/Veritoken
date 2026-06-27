@@ -39,7 +39,7 @@ fn setup() -> Harness {
 
     let compliance_id = env.register(ComplianceEngine, ());
     let compliance = ComplianceEngineClient::new(&env, &compliance_id);
-    compliance.initialize(&admin);
+    compliance.initialize(&admin, &kyc_id);
 
     // Carbon credit token — constructor args passed atomically at register time
     let token_id = env.register(

@@ -8,6 +8,7 @@ use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, E
 #[contracttype]
 pub enum DataKey {
     Admin,
+    KycRegistry,
     Rules,
     Blocklist,
     MaxTransfer,
@@ -36,11 +37,14 @@ pub struct ComplianceEngine;
 
 #[contractimpl]
 impl ComplianceEngine {
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn initialize(env: Env, admin: Address, kyc_registry: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::KycRegistry, &kyc_registry);
         let default_rules = ComplianceRules {
             max_transfer_amount: 0,
             min_holding_period: 0,
@@ -110,14 +114,8 @@ impl ComplianceEngine {
 
     // ── Transfer validation ──────────────────────────────────────────────────
 
-    /// Called by rwa-token before every transfer. Returns true if the
+    /// Called by asset tokens before every transfer. Returns true if the
     /// transfer is compliant with all configured rules.
-    /// Called by asset tokens to validate a transfer.
-    ///
-    /// The minimum holding period is measured from the holder's most recent receipt of
-    /// tokens (mint or transfer-in). A new receipt resets the holder's lockup clock for
-    /// all of their tokens, so newly received balances cannot bypass the holding period
-    /// by relying on an earlier acquisition time.
     pub fn can_transfer(env: Env, from: Address, to: Address, amount: i128) -> bool {
         let rules: ComplianceRules = env.storage().instance().get(&DataKey::Rules).unwrap();
 
@@ -128,6 +126,20 @@ impl ComplianceEngine {
         let blocklist = Self::blocklist(&env);
         if blocklist.contains(&from) || blocklist.contains(&to) {
             return false;
+        }
+
+        if rules.require_same_jurisdiction {
+            let kyc_registry: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::KycRegistry)
+                .unwrap();
+            let kyc = kyc_iface::KycRegistryClient::new(&env, &kyc_registry);
+            let from_record = kyc.get_record(&from);
+            let to_record = kyc.get_record(&to);
+            if from_record.jurisdiction != to_record.jurisdiction {
+                return false;
+            }
         }
 
         if rules.max_transfer_amount > 0 && amount > rules.max_transfer_amount {
@@ -213,5 +225,34 @@ impl ComplianceEngine {
             .instance()
             .get(&DataKey::Blocklist)
             .unwrap_or_else(|| Vec::new(env))
+    }
+}
+
+mod kyc_iface {
+    use soroban_sdk::{contractclient, contracttype, Address, String};
+
+    #[contracttype]
+    #[derive(Clone)]
+    pub struct KycRecord {
+        pub status: KycStatus,
+        pub verifier: Address,
+        pub tier: u32,
+        pub expiry: u64,
+        pub jurisdiction: String,
+    }
+
+    #[contracttype]
+    #[derive(Clone)]
+    pub enum KycStatus {
+        Pending,
+        Approved,
+        Rejected,
+        Revoked,
+    }
+
+    #[contractclient(name = "KycRegistryClient")]
+    #[allow(dead_code)]
+    pub trait KycRegistry {
+        fn get_record(env: soroban_sdk::Env, addr: Address) -> KycRecord;
     }
 }
