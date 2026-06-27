@@ -117,6 +117,23 @@ impl KycRegistry {
             .publish((symbol_short!("revoked"), subject), verifier);
     }
 
+    pub fn renew(env: Env, verifier: Address, subject: Address, new_expiry: u64) {
+        verifier.require_auth();
+        Self::require_verifier(&env, &verifier);
+        let mut record: KycRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::KycStatus(subject.clone()))
+            .expect("no KYC record");
+        if record.status != KycStatus::Approved {
+            panic!("not currently approved");
+        }
+        record.expiry = new_expiry;
+        Self::write_record(&env, subject.clone(), record);
+        env.events()
+            .publish((symbol_short!("renewed"), subject), verifier);
+    }
+
     // ── Queries ──────────────────────────────────────────────────────────────
 
     /// Returns true if the address has an active, non-expired KYC approval.

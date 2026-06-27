@@ -142,3 +142,45 @@ fn test_remove_verifier() {
     let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "US"));
     assert!(res.is_err());
 }
+
+#[test]
+fn test_renew_extends_expiry() {
+    let (env, client, _admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    // Approve with expiry at 2000
+    client.approve(&verifier, &subject, &1, &2_000, &String::from_str(&env, "US"));
+    assert!(client.is_approved(&subject));
+
+    // Renew with a later expiry
+    client.renew(&verifier, &subject, &5_000);
+
+    let record = client.get_record(&subject);
+    assert_eq!(record.expiry, 5_000);
+    // Other fields unchanged
+    assert!(matches!(record.status, crate::KycStatus::Approved));
+    assert_eq!(record.tier, 1);
+    assert_eq!(record.jurisdiction, String::from_str(&env, "US"));
+
+    // Verify it's still approved and not expired
+    env.ledger().set_timestamp(4_000);
+    assert!(client.is_approved(&subject));
+}
+
+#[test]
+#[should_panic(expected = "not an authorized verifier")]
+fn test_unauthorized_verifier_cannot_renew() {
+    let (env, client, _admin) = setup();
+    let verifier = Address::generate(&env);
+    let rogue = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    // Approve with the real verifier
+    client.approve(&verifier, &subject, &0, &2_000, &String::from_str(&env, "US"));
+
+    // Attempt renewal by unauthorized verifier
+    client.renew(&rogue, &subject, &5_000);
+}
