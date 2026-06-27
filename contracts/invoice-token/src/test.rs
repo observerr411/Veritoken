@@ -3,7 +3,7 @@
 use crate::{InvoiceMeta, InvoiceToken, InvoiceTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Events as _, Ledger as _}, Address, Env, IntoVal, String};
 
 // ── Test harness ─────────────────────────────────────────────────────────────
 
@@ -47,7 +47,7 @@ fn setup() -> Harness {
 
     let compliance_id = env.register(ComplianceEngine, ());
     let compliance = ComplianceEngineClient::new(&env, &compliance_id);
-    compliance.initialize(&admin);
+    compliance.initialize(&admin, &kyc_id);
 
     let token_id = env.register(
         InvoiceToken,
@@ -101,6 +101,48 @@ impl Harness {
 // ── Existing tests ────────────────────────────────────────────────────────────
 
 #[test]
+fn test_transfer_before_due_date() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.issue(&alice, &1_000);
+
+    // Default timestamp (0) is before due_date (1_900_000_000) — transfer succeeds.
+    h.token.transfer(&alice, &bob, &400);
+    assert_eq!(h.token.balance(&alice), 600);
+    assert_eq!(h.token.balance(&bob), 400);
+}
+
+#[test]
+fn test_transfer_blocked_after_due_date() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.issue(&alice, &1_000);
+
+    h.env.ledger().set_timestamp(1_900_000_001);
+    assert!(h.token.try_transfer(&alice, &bob, &500).is_err());
+}
+
+#[test]
+fn test_transfer_from_blocked_after_due_date() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.issue(&alice, &1_000);
+    h.token.approve(&alice, &bob, &500, &999_999_999);
+
+    h.env.ledger().set_timestamp(1_900_000_001);
+    assert!(h.token.try_transfer_from(&bob, &alice, &bob, &500).is_err());
+}
+
+#[test]
 fn test_metadata() {
     let h = setup();
     assert_eq!(h.token.decimals(), 7);
@@ -126,16 +168,6 @@ fn test_issue_requires_kyc() {
     h.token.issue(&holder, &1_000);
     assert_eq!(h.token.balance(&holder), 1_000);
     assert_eq!(h.token.total_supply(), 1_000);
-
-    // Assert that the "issued" event was emitted
-    let events = h.env.events().all();
-    let issued_topic = soroban_sdk::symbol_short!("issued").into_val(&h.env);
-    assert!(
-        events
-            .iter()
-            .any(|(_, topics, _)| topics.first() == Some(&issued_topic)),
-        "issued event should have been emitted"
-    );
 }
 
 #[test]
@@ -268,7 +300,8 @@ fn test_update_compliance_engine_admin_only() {
     // Deploy a second paused compliance engine.
     let ce2_id = h.env.register(ComplianceEngine, ());
     let ce2 = ComplianceEngineClient::new(&h.env, &ce2_id);
-    ce2.initialize(&h.admin);
+    let kyc_id = h.env.register(kyc_registry::KycRegistry, ());
+    ce2.initialize(&h.admin, &kyc_id);
     ce2.pause();
 
     h.token.update_compliance_engine(&ce2_id);

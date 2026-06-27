@@ -11,7 +11,7 @@ mod test;
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
-    Address, Env, String,
+    Address, Env, String, Vec,
 };
 
 #[contracterror]
@@ -44,6 +44,8 @@ pub enum DataKey {
     DividendPerShare,
     /// SEP-41 delegated-transfer allowance: (owner, spender) → AllowanceValue.
     Allowance(AllowanceKey),
+    HolderList,
+    HolderCount,
 }
 
 #[contracttype]
@@ -196,6 +198,7 @@ impl PropertyToken {
         Self::write_balance(&env, to.clone(), bal + shares);
         Self::reset_debt(&env, to.clone());
         Self::register_holder(&env, &to);
+        Self::add_holder_local(&env, &to);
         env.events().publish((symbol_short!("mint"), to), shares);
     }
 
@@ -220,6 +223,10 @@ impl PropertyToken {
         Self::reset_debt(&env, from.clone());
         Self::reset_debt(&env, to.clone());
         Self::register_holder(&env, &to);
+        Self::add_holder_local(&env, &to);
+        if from_bal == shares {
+            Self::remove_holder_local(&env, &from);
+        }
         env.events()
             .publish((symbol_short!("transfer"), from, to), shares);
     }
@@ -290,6 +297,10 @@ impl PropertyToken {
         Self::reset_debt(&env, from.clone());
         Self::reset_debt(&env, to.clone());
         Self::register_holder(&env, &to);
+        Self::add_holder_local(&env, &to);
+        if from_bal == shares {
+            Self::remove_holder_local(&env, &from);
+        }
         env.events()
             .publish((symbol_short!("transfer"), from, to), shares);
     }
@@ -359,6 +370,31 @@ impl PropertyToken {
             .get(&DataKey::Unclaimed(holder.clone()))
             .unwrap_or(0);
         unclaimed + Self::accrued(&env, holder)
+    }
+
+    pub fn get_holders(env: Env, start: u32, limit: u32) -> Vec<Address> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let holders: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderList)
+            .unwrap_or_else(|| Vec::new(&env));
+        let total = holders.len();
+        let capped = limit.min(50);
+        let end = (start + capped).min(total);
+        let mut out = Vec::new(&env);
+        for i in start..end {
+            out.push_back(holders.get_unchecked(i));
+        }
+        out
+    }
+
+    pub fn holder_count(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::HolderCount)
+            .unwrap_or(0)
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
@@ -478,6 +514,47 @@ impl PropertyToken {
             .expect("compliance engine must be set");
         let client = ComplianceEngineClient::new(env, &engine);
         client.register_holder(addr);
+    }
+
+    fn add_holder_local(env: &Env, addr: &Address) {
+        let mut holders: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderList)
+            .unwrap_or_else(|| Vec::new(env));
+        for existing in holders.iter() {
+            if existing == *addr {
+                return;
+            }
+        }
+        holders.push_back(addr.clone());
+        env.storage().persistent().set(&DataKey::HolderList, &holders);
+        env.storage().persistent().extend_ttl(&DataKey::HolderList, THRESHOLD, BUMP);
+        let count: u32 = env.storage().instance().get(&DataKey::HolderCount).unwrap_or(0);
+        env.storage().instance().set(&DataKey::HolderCount, &(count + 1));
+    }
+
+    fn remove_holder_local(env: &Env, addr: &Address) {
+        let holders: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderList)
+            .unwrap_or_else(|| Vec::new(env));
+        let mut new_holders = Vec::new(env);
+        let mut found = false;
+        for h in holders.iter() {
+            if h == *addr {
+                found = true;
+            } else {
+                new_holders.push_back(h);
+            }
+        }
+        if found {
+            env.storage().persistent().set(&DataKey::HolderList, &new_holders);
+            env.storage().persistent().extend_ttl(&DataKey::HolderList, THRESHOLD, BUMP);
+            let count: u32 = env.storage().instance().get(&DataKey::HolderCount).unwrap_or(0);
+            env.storage().instance().set(&DataKey::HolderCount, &count.saturating_sub(1));
+        }
     }
 
     fn read_balance(env: &Env, addr: Address) -> i128 {

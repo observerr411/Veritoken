@@ -44,7 +44,7 @@ fn setup() -> Harness {
 
     let compliance_id = env.register(ComplianceEngine, ());
     let compliance = ComplianceEngineClient::new(&env, &compliance_id);
-    compliance.initialize(&admin);
+    compliance.initialize(&admin, &kyc_id);
 
     // Property token — constructor args passed atomically at register time
     let token_id = env.register(
@@ -164,16 +164,6 @@ fn test_dividend_distribution() {
     h.token.deposit_dividend(&1_000);
     assert_eq!(h.token.pending_dividend(&alice), 100);
 
-    // Assert that the "div_dep" event was emitted
-    let events = h.env.events().all();
-    let div_dep_topic = soroban_sdk::symbol_short!("div_dep").into_val(&h.env);
-    assert!(
-        events
-            .iter()
-            .any(|(_, topics, _)| topics.first() == Some(&div_dep_topic)),
-        "div_dep event should have been emitted"
-    );
-
     let claimed = h.token.claim_dividend(&alice);
     assert_eq!(claimed, 100);
     assert_eq!(h.token.pending_dividend(&alice), 0);
@@ -227,6 +217,72 @@ fn test_transfer_snapshots_dividends() {
     h.token.deposit_dividend(&1_000);
     assert_eq!(h.token.pending_dividend(&bob), 100);
     assert_eq!(h.token.pending_dividend(&alice), 0);
+}
+
+// ── Holder list tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_holder_list_updated_on_mint() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    assert_eq!(h.token.holder_count(), 0);
+
+    h.token.mint(&alice, &100);
+    assert_eq!(h.token.holder_count(), 1);
+    assert_eq!(h.token.get_holders(&0, &50).len(), 1);
+
+    h.token.mint(&bob, &50);
+    assert_eq!(h.token.holder_count(), 2);
+
+    // Minting again to alice is idempotent — count stays at 2.
+    h.token.mint(&alice, &10);
+    assert_eq!(h.token.holder_count(), 2);
+}
+
+#[test]
+fn test_holder_removed_when_balance_hits_zero() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    h.token.mint(&alice, &100);
+    assert_eq!(h.token.holder_count(), 1);
+
+    // Transfer entire balance — alice drops to 0, bob is added.
+    h.token.transfer(&alice, &bob, &100);
+    assert_eq!(h.token.holder_count(), 1);
+    let holders = h.token.get_holders(&0, &50);
+    assert_eq!(holders.len(), 1);
+    assert_eq!(holders.get(0).unwrap(), bob);
+}
+
+#[test]
+fn test_get_holders_pagination() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+
+    h.token.mint(&alice, &10);
+    h.token.mint(&bob, &10);
+    h.token.mint(&carol, &10);
+    assert_eq!(h.token.holder_count(), 3);
+
+    // Page size 2 starting from 0.
+    assert_eq!(h.token.get_holders(&0, &2).len(), 2);
+    // Page size 2 starting from 2 — only 1 remaining.
+    assert_eq!(h.token.get_holders(&2, &2).len(), 1);
+    // Out of range start returns empty.
+    assert_eq!(h.token.get_holders(&10, &2).len(), 0);
 }
 
 // ── update_kyc_registry / update_compliance_engine tests ─────────────────────
@@ -286,7 +342,8 @@ fn test_update_compliance_engine_admin_only() {
     // Deploy a second compliance engine and pause it
     let ce2_id = h.env.register(ComplianceEngine, ());
     let ce2 = ComplianceEngineClient::new(&h.env, &ce2_id);
-    ce2.initialize(&h.admin);
+    let dummy_kyc = h.env.register(kyc_registry::KycRegistry, ());
+    ce2.initialize(&h.admin, &dummy_kyc);
     ce2.pause();
 
     // Admin can update

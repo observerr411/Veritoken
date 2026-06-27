@@ -7,6 +7,8 @@
 //! Minting is admin-gated and still enforces active KYC plus mint-time
 //! compliance checks for pause/blocklist rules.
 
+extern crate alloc;
+
 #[cfg(test)]
 mod test;
 
@@ -314,6 +316,63 @@ impl CarbonCreditToken {
             out.push_back(r);
         }
         out
+    }
+
+    /// Returns a JSON-formatted retirement certificate for the given receipt index.
+    pub fn to_certificate_json(env: Env, index: u32) -> String {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let receipt: RetirementReceipt = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Receipt(index))
+            .expect("receipt not found");
+        let meta: ProjectMeta = env.storage().instance().get(&DataKey::ProjectMeta).unwrap();
+
+        fn push_soroban_str(out: &mut alloc::vec::Vec<u8>, s: &String) {
+            let len = s.len() as usize;
+            let start = out.len();
+            out.resize(start + len, 0);
+            s.copy_into_slice(&mut out[start..]);
+        }
+
+        fn push_u128(out: &mut alloc::vec::Vec<u8>, mut n: u128) {
+            if n == 0 { out.push(b'0'); return; }
+            let mut buf = [0u8; 39];
+            let mut pos = 39usize;
+            while n > 0 { pos -= 1; buf[pos] = b'0' + (n % 10) as u8; n /= 10; }
+            out.extend_from_slice(&buf[pos..]);
+        }
+
+        fn push_i128(out: &mut alloc::vec::Vec<u8>, n: i128) {
+            if n < 0 {
+                out.push(b'-');
+                push_u128(out, if n == i128::MIN { 170141183460469231731687303715884105728u128 } else { (-n) as u128 });
+            } else {
+                push_u128(out, n as u128);
+            }
+        }
+
+        let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        out.extend_from_slice(b"{\"project_id\":\"");
+        push_soroban_str(&mut out, &meta.project_id);
+        out.extend_from_slice(b"\",\"standard\":\"");
+        push_soroban_str(&mut out, &meta.standard);
+        out.extend_from_slice(b"\",\"vintage_year\":");
+        push_u128(&mut out, meta.vintage_year as u128);
+        out.extend_from_slice(b",\"retiree\":\"");
+        let retiree_str = receipt.retiree.to_string();
+        push_soroban_str(&mut out, &retiree_str);
+        out.extend_from_slice(b"\",\"amount\":");
+        push_i128(&mut out, receipt.amount);
+        out.extend_from_slice(b",\"timestamp\":");
+        push_u128(&mut out, receipt.timestamp as u128);
+        out.extend_from_slice(b",\"beneficiary\":\"");
+        push_soroban_str(&mut out, &receipt.beneficiary);
+        out.extend_from_slice(b"\",\"retirement_reason\":\"");
+        push_soroban_str(&mut out, &receipt.retirement_reason);
+        out.extend_from_slice(b"\"}");
+
+        String::from_bytes(&env, &out)
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {

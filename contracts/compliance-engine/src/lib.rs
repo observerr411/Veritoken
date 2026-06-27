@@ -19,6 +19,7 @@ pub enum ComplianceError {
 #[contracttype]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     KycRegistry,
     Rules,
     Blocklist,

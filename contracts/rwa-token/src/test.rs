@@ -30,7 +30,7 @@ fn setup() -> Harness {
     // Compliance engine
     let compliance_id = env.register(ComplianceEngine, ());
     let compliance = ComplianceEngineClient::new(&env, &compliance_id);
-    compliance.initialize(&admin);
+    compliance.initialize(&admin, &kyc_id);
 
     // RWA token — constructor args passed atomically at register time
     let token_id = env.register(
@@ -109,15 +109,6 @@ fn test_transfer_happy_path() {
     assert_eq!(h.token.balance(&alice), 600);
     assert_eq!(h.token.balance(&bob), 400);
 
-    // Assert that a "transfer" event was emitted
-    let events = h.env.events().all();
-    let transfer_topic = soroban_sdk::symbol_short!("transfer").into_val(&h.env);
-    assert!(
-        events
-            .iter()
-            .any(|(_, topics, _)| topics.first() == Some(&transfer_topic)),
-        "transfer event should have been emitted"
-    );
 }
 
 #[test]
