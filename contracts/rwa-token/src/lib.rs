@@ -17,6 +17,9 @@ mod storage_types;
 #[cfg(test)]
 mod test;
 
+#[cfg(test)]
+mod sep41_compliance;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -130,6 +133,9 @@ impl RwaToken {
 
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
         from.require_auth();
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
         kyc::require_kyc(&env, &from);
         kyc::require_kyc(&env, &to);
         compliance::check_transfer(&env, &from, &to, amount);
@@ -151,6 +157,9 @@ impl RwaToken {
 
     pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
         spender.require_auth();
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
         kyc::require_kyc(&env, &from);
         kyc::require_kyc(&env, &to);
         compliance::check_transfer(&env, &from, &to, amount);
@@ -173,6 +182,9 @@ impl RwaToken {
 
     pub fn burn(env: Env, from: Address, amount: i128) {
         from.require_auth();
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
         kyc::require_kyc(&env, &from);
         let from_balance_before = balance::read_balance(&env, from.clone());
         balance::spend_balance(&env, from.clone(), amount);
@@ -186,6 +198,10 @@ impl RwaToken {
 
     pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
         spender.require_auth();
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
+        kyc::require_kyc(&env, &from);
         let from_balance_before = balance::read_balance(&env, from.clone());
         allowance::spend_allowance(&env, from.clone(), spender, amount);
         balance::spend_balance(&env, from.clone(), amount);
@@ -218,6 +234,9 @@ impl RwaToken {
     pub fn mint(env: Env, to: Address, amount: i128) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
         kyc::require_kyc(&env, &to);
         let previous_balance = balance::read_balance(&env, to.clone());
         balance::receive_balance(&env, to.clone(), amount);

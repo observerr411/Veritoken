@@ -1,16 +1,25 @@
 import { Networks, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
+import { useNetworkStore, getNetworkRpcUrl } from "./networkStore";
 
-export const NETWORK = (import.meta.env.VITE_STELLAR_NETWORK as string) ?? "testnet";
+export const getNetwork = () => useNetworkStore.getState().network;
 
-export const RPC_URL =
-  NETWORK === "mainnet"
-    ? "https://mainnet.sorobanrpc.com"
-    : "https://soroban-testnet.stellar.org";
+export const getRpcUrl = () => {
+  const network = getNetwork();
+  return getNetworkRpcUrl(network);
+};
 
-export const NETWORK_PASSPHRASE =
-  NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
+export const getNetworkPassphrase = () => {
+  const network = getNetwork();
+  return network === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
+};
 
-export const server = new rpc.Server(RPC_URL, { allowHttp: false });
+export const getServer = () => new rpc.Server(getRpcUrl(), { allowHttp: false });
+
+// For backwards compatibility, export these as functions that return the current values
+export const NETWORK = getNetwork();
+export const RPC_URL = getRpcUrl();
+export const NETWORK_PASSPHRASE = getNetworkPassphrase();
+export const server = getServer();
 
 export const CONTRACT_IDS = {
   kycRegistry: import.meta.env.VITE_KYC_REGISTRY_ID ?? "",

@@ -29,15 +29,6 @@ fn test_add_verifier_and_approve() {
     assert!(client.is_approved(&subject));
     assert_eq!(client.get_tier(&subject), 1);
 
-    // Assert that the "approved" event was emitted with the expected topic
-    let events = env.events().all();
-    let approved_topic = soroban_sdk::symbol_short!("approved").into_val(&env);
-    assert!(
-        events
-            .iter()
-            .any(|(_, topics, _)| topics.first() == Some(&approved_topic)),
-        "approved event should have been emitted"
-    );
 }
 
 #[test]

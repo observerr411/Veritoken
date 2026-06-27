@@ -30,6 +30,7 @@ pub enum InvoiceError {
     CompliancePaused = 9,
     Blocklisted = 10,
     TransferBlocked = 11,
+    PastDueDate = 12,
 }
 
 #[contracttype]
@@ -263,7 +264,7 @@ impl InvoiceToken {
     pub fn burn(env: Env, from: Address, amount: i128) {
         from.require_auth();
         Self::require_kyc(&env, &from);
-        Self::check_redeem_compliance(&env, &from);
+        Self::check_redeem_compliance(&env, &from, amount);
         let bal = Self::read_balance(&env, from.clone());
         if bal < amount {
             panic!("insufficient balance");
@@ -288,7 +289,7 @@ impl InvoiceToken {
     pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
         spender.require_auth();
         Self::require_kyc(&env, &from);
-        Self::check_redeem_compliance(&env, &from);
+        Self::check_redeem_compliance(&env, &from, amount);
 
         // Spend allowance
         let allowance = Self::read_allowance(&env, from.clone(), spender.clone());
@@ -340,6 +341,10 @@ impl InvoiceToken {
         {
             panic!("invoice already settled");
         }
+        let meta: InvoiceMeta = env.storage().instance().get(&DataKey::InvoiceMeta).unwrap();
+        if env.ledger().timestamp() > meta.due_date {
+            panic_with_error!(env, InvoiceError::PastDueDate);
+        }
         if amount < 0 {
             panic_with_error!(env, InvoiceError::NegativeAmount);
         }
@@ -387,6 +392,10 @@ impl InvoiceToken {
             .unwrap_or(false)
         {
             panic!("invoice already settled");
+        }
+        let meta: InvoiceMeta = env.storage().instance().get(&DataKey::InvoiceMeta).unwrap();
+        if env.ledger().timestamp() > meta.due_date {
+            panic_with_error!(env, InvoiceError::PastDueDate);
         }
         if amount < 0 {
             panic_with_error!(env, InvoiceError::NegativeAmount);
@@ -563,6 +572,7 @@ impl InvoiceToken {
                 expiration_ledger: 0,
             })
     }
+
 }
 
 mod kyc_iface {

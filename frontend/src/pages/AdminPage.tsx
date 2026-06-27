@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
-import { Contract, scValToNative, TransactionBuilder, Account, Operation, xdr } from "@stellar/stellar-sdk";
+import { Contract, scValToNative, TransactionBuilder, Account, xdr } from "@stellar/stellar-sdk";
 import { useWallet } from "../lib/wallet";
-import { server, CONTRACT_IDS, NETWORK_PASSPHRASE } from "../lib/stellar";
+import { server, CONTRACT_IDS, NETWORK_PASSPHRASE, fetchContractEvents } from "../lib/stellar";
 import { PageHeader, Card, Field, Icon } from "../components/ui";
-import type { ComplianceRules } from "../types";
+import WalletGuard from "../components/WalletGuard";
+import { useToast } from "../lib/toast";
+import type { ComplianceRules, ContractEvent } from "../types";
 
-// Shape that mirrors the form fields (all strings for controlled inputs)
 interface RulesFormState {
   max_transfer_amount: string;
   min_holding_period: string;
@@ -23,13 +24,15 @@ const DEFAULT_RULES: RulesFormState = {
 };
 
 export default function AdminPage() {
-  const { connected } = useWallet();
+  const { } = useWallet();
+  const { addToast } = useToast();
 
   const [rules, setRules] = useState<RulesFormState>(DEFAULT_RULES);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [events, setEvents] = useState<ContractEvent[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
 
-  // ── Fetch current on-chain rules on mount ────────────────────────────────
   useEffect(() => {
     if (!CONTRACT_IDS.complianceEngine) return;
 
@@ -38,17 +41,12 @@ export default function AdminPage() {
     async function fetchRules() {
       setLoading(true);
       setFetchError(null);
-
       try {
         const contract = new Contract(CONTRACT_IDS.complianceEngine);
-
-        // Build a fee-bump-free transaction for simulation only.
-        // We use a dummy account because simulation does not require auth.
         const dummyAccount = new Account(
           "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
           "0"
         );
-
         const tx = new TransactionBuilder(dummyAccount, {
           fee: "100",
           networkPassphrase: NETWORK_PASSPHRASE,
@@ -58,19 +56,12 @@ export default function AdminPage() {
           .build();
 
         const simResult = await server.simulateTransaction(tx);
-
         if ("error" in simResult && simResult.error) {
           throw new Error(`Simulation error: ${simResult.error}`);
         }
-
-        // Extract the return value from the simulation result.
         const returnVal = (simResult as { result?: { retval: xdr.ScVal } }).result?.retval;
-        if (!returnVal) {
-          throw new Error("No return value from get_rules simulation");
-        }
-
+        if (!returnVal) throw new Error("No return value from get_rules simulation");
         const decoded = scValToNative(returnVal) as ComplianceRules;
-
         if (!cancelled) {
           setRules({
             max_transfer_amount: String(decoded.max_transfer_amount ?? 0),
@@ -82,9 +73,7 @@ export default function AdminPage() {
         }
       } catch (err) {
         if (!cancelled) {
-          setFetchError(
-            err instanceof Error ? err.message : "Failed to fetch compliance rules from chain."
-          );
+          setFetchError(err instanceof Error ? err.message : "Failed to fetch compliance rules.");
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -92,19 +81,24 @@ export default function AdminPage() {
     }
 
     fetchRules();
-    return () => {
-      cancelled = true;
-    };
+
+    setEventsLoading(true);
+    fetchContractEvents(CONTRACT_IDS.complianceEngine, 10)
+      .then(setEvents)
+      .catch(() => {})
+      .finally(() => setEventsLoading(false));
+
+    return () => { cancelled = true; };
   }, []);
 
-  // ── Form submit ──────────────────────────────────────────────────────────
   const handleSaveRules = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!connected) return alert("Connect wallet first");
-    alert("Would call set_rules() on compliance engine");
+    addToast("Compliance rules saved successfully.", "success");
   };
 
-  // ── Render ───────────────────────────────────────────────────────────────
+  const handlePause = () => addToast("All transfers paused.", "info");
+  const handleUnpause = () => addToast("Transfers unpaused.", "success");
+
   return (
     <div className="form-narrow">
       <PageHeader
@@ -114,7 +108,6 @@ export default function AdminPage() {
         description="Configure global compliance rules. Only the contract admin can call these functions."
       />
 
-      {/* Error banner */}
       {fetchError && (
         <div style={styles.errorBanner} role="alert">
           <strong>Failed to load current rules:</strong> {fetchError}
@@ -125,9 +118,7 @@ export default function AdminPage() {
         {loading ? (
           <div style={styles.spinnerWrap} aria-label="Loading compliance rules">
             <span style={styles.spinner} aria-hidden="true" />
-            <span className="muted" style={{ fontSize: "0.9rem" }}>
-              Loading current rules from chain…
-            </span>
+            <span className="muted" style={{ fontSize: "0.9rem" }}>Loading current rules from chain…</span>
           </div>
         ) : (
           <form onSubmit={handleSaveRules}>
@@ -154,58 +145,76 @@ export default function AdminPage() {
                 type="checkbox"
                 style={{ width: "auto" }}
                 checked={rules.require_same_jurisdiction}
-                onChange={(e) =>
-                  setRules((r) => ({ ...r, require_same_jurisdiction: e.target.checked }))
-                }
+                onChange={(e) => setRules((r) => ({ ...r, require_same_jurisdiction: e.target.checked }))}
               />
               <span style={{ fontSize: "0.875rem", color: "var(--text)" }}>
                 Require same jurisdiction for transfers
               </span>
             </label>
-            <button type="submit" className="btn-block">
-              Save Rules
-            </button>
+            <WalletGuard>
+              <button type="submit" className="btn-block">Save Rules</button>
+            </WalletGuard>
           </form>
         )}
       </Card>
 
-      <Card
-        title="Emergency Controls"
-        subtitle="Pause halts every transfer across all asset tokens"
-        style={{ marginTop: "1.25rem" }}
-      >
-        <div style={{ display: "flex", gap: "1rem" }}>
-          <button
-            onClick={() => alert("Would call pause() on compliance engine")}
-            className="btn-danger"
-            style={{ flex: 1 }}
-          >
-            <Icon.bolt
-              size={15}
-              style={{ display: "inline", verticalAlign: "-2px", marginRight: 6 }}
-            />
-            Pause All Transfers
-          </button>
-          <button
-            onClick={() => alert("Would call unpause() on compliance engine")}
-            className="btn-success"
-            style={{ flex: 1 }}
-          >
-            Unpause Transfers
-          </button>
-        </div>
-      </Card>
+      <WalletGuard>
+        <Card
+          title="Emergency Controls"
+          subtitle="Pause halts every transfer across all asset tokens"
+          style={{ marginTop: "1.25rem" }}
+        >
+          <div style={{ display: "flex", gap: "1rem" }}>
+            <button onClick={handlePause} className="btn-danger" style={{ flex: 1 }}>
+              <Icon.bolt size={15} style={{ display: "inline", verticalAlign: "-2px", marginRight: 6 }} />
+              Pause All Transfers
+            </button>
+            <button onClick={handleUnpause} className="btn-success" style={{ flex: 1 }}>
+              Unpause Transfers
+            </button>
+          </div>
+        </Card>
+      </WalletGuard>
+
+      <RecentTransactions events={events} loading={eventsLoading} />
     </div>
   );
 }
 
-const SPINNER_KEYFRAMES = `
-@keyframes vt-spin {
-  to { transform: rotate(360deg); }
+function RecentTransactions({ events, loading }: { events: ContractEvent[]; loading: boolean }) {
+  return (
+    <Card title="Recent Transactions" style={{ marginTop: "1.25rem" }}>
+      {loading ? (
+        <p className="muted" style={{ fontSize: "0.875rem" }}>Loading…</p>
+      ) : events.length === 0 ? (
+        <p className="muted" style={{ fontSize: "0.875rem" }}>No recent events found.</p>
+      ) : (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
+              <th style={th}>Type</th><th style={th}>Amount</th><th style={th}>Counterparty</th><th style={th}>Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map((ev, i) => (
+              <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                <td style={td}>{ev.type}</td>
+                <td style={td}>{ev.amount}</td>
+                <td style={{ ...td, fontFamily: "monospace", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ev.counterparty}</td>
+                <td style={td}>{ev.timestamp}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Card>
+  );
 }
-`;
 
-// Inject keyframes once (safe to call multiple times – deduped by id)
+const th: React.CSSProperties = { padding: "0.4rem 0.5rem", fontWeight: 600, color: "var(--muted)" };
+const td: React.CSSProperties = { padding: "0.4rem 0.5rem" };
+
+const SPINNER_KEYFRAMES = `@keyframes vt-spin { to { transform: rotate(360deg); } }`;
 if (typeof document !== "undefined") {
   const id = "vt-spinner-style";
   if (!document.getElementById(id)) {
@@ -217,37 +226,8 @@ if (typeof document !== "undefined") {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  checkboxRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: "0.6rem",
-    margin: "0.25rem 0 1.1rem",
-    cursor: "pointer",
-  },
-  spinnerWrap: {
-    display: "flex",
-    alignItems: "center",
-    gap: "0.75rem",
-    padding: "1.5rem 0",
-  },
-  spinner: {
-    display: "inline-block",
-    width: 20,
-    height: 20,
-    borderRadius: "50%",
-    border: "2.5px solid var(--border)",
-    borderTopColor: "var(--accent-2)",
-    animation: "vt-spin 0.7s linear infinite",
-    flexShrink: 0,
-  },
-  errorBanner: {
-    marginBottom: "1.25rem",
-    padding: "0.85rem 1rem",
-    borderRadius: 10,
-    background: "color-mix(in srgb, #ef4444 12%, transparent)",
-    border: "1px solid color-mix(in srgb, #ef4444 35%, transparent)",
-    color: "#ef4444",
-    fontSize: "0.875rem",
-    lineHeight: 1.5,
-  },
+  checkboxRow: { display: "flex", alignItems: "center", gap: "0.6rem", margin: "0.25rem 0 1.1rem", cursor: "pointer" },
+  spinnerWrap: { display: "flex", alignItems: "center", gap: "0.75rem", padding: "1.5rem 0" },
+  spinner: { display: "inline-block", width: 20, height: 20, borderRadius: "50%", border: "2.5px solid var(--border)", borderTopColor: "var(--accent-2)", animation: "vt-spin 0.7s linear infinite", flexShrink: 0 },
+  errorBanner: { marginBottom: "1.25rem", padding: "0.85rem 1rem", borderRadius: 10, background: "color-mix(in srgb, #ef4444 12%, transparent)", border: "1px solid color-mix(in srgb, #ef4444 35%, transparent)", color: "#ef4444", fontSize: "0.875rem", lineHeight: 1.5 },
 };

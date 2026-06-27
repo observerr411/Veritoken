@@ -72,7 +72,7 @@ export async function readCall<T>(
 
 /** Build, simulate, and submit a state-mutating call. Returns once confirmed. */
 export async function writeCall(
-  server: rpc.Server,
+  _server: rpc.Server,
   contractId: string,
   method: string,
   args: xdr.ScVal[],
@@ -107,5 +107,5 @@ export const toBool = (b: boolean): xdr.ScVal =>
 /** Fetch the current sequence number for a Stellar account. */
 export async function fetchSequence(server: rpc.Server, address: string): Promise<string> {
   const account = await server.getAccount(address);
-  return account.sequence;
+  return (account as unknown as { sequence: string }).sequence;
 }
