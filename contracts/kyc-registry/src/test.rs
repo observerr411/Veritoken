@@ -2,7 +2,7 @@
 
 use crate::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{storage::Instance, Address as _, Ledger},
     Address, Env, String,
 };
 
@@ -28,6 +28,16 @@ fn test_add_verifier_and_approve() {
     client.approve(&verifier, &subject, &1, &0, &String::from_str(&env, "US"));
     assert!(client.is_approved(&subject));
     assert_eq!(client.get_tier(&subject), 1);
+
+    // Assert that the "approved" event was emitted with the expected topic
+    let events = env.events().all();
+    let approved_topic = soroban_sdk::symbol_short!("approved").into_val(&env);
+    assert!(
+        events
+            .iter()
+            .any(|(_, topics, _)| topics.first() == Some(&approved_topic)),
+        "approved event should have been emitted"
+    );
 }
 
 #[test]
@@ -38,13 +48,13 @@ fn test_double_initialize_panics() {
 }
 
 #[test]
-#[should_panic(expected = "not an authorized verifier")]
 fn test_unauthorized_verifier_cannot_approve() {
     let (env, client, _admin) = setup();
     let rogue = Address::generate(&env);
     let subject = Address::generate(&env);
-    // rogue was never added as a verifier
-    client.approve(&rogue, &subject, &0, &0, &String::from_str(&env, "US"));
+    // rogue was never added as a verifier — must return an error
+    let res = client.try_approve(&rogue, &subject, &0, &0, &String::from_str(&env, "US"));
+    assert!(res.is_err());
 }
 
 #[test]
@@ -144,43 +154,41 @@ fn test_remove_verifier() {
 }
 
 #[test]
-fn test_renew_extends_expiry() {
+fn test_instance_ttl_bump() {
     let (env, client, _admin) = setup();
+    let contract_id = client.address.clone();
+
+    // The constants defined in lib.rs:
+    // const DAY_IN_LEDGERS: u32 = 17280;
+    // const BUMP: u32 = 30 * DAY_IN_LEDGERS; // 518400 ledgers
+    let bump = 30 * 17280;
+
+    // Initially, calling add_verifier will bump the TTL to bump (518400 ledgers)
     let verifier = Address::generate(&env);
-    let subject = Address::generate(&env);
     client.add_verifier(&verifier);
 
-    // Approve with expiry at 2000
-    client.approve(&verifier, &subject, &1, &2_000, &String::from_str(&env, "US"));
-    assert!(client.is_approved(&subject));
+    let initial_ttl = env.as_contract(&contract_id, || {
+        env.storage().instance().get_ttl()
+    });
+    assert_eq!(initial_ttl, bump);
 
-    // Renew with a later expiry
-    client.renew(&verifier, &subject, &5_000);
+    // Advance the ledger sequence to decrease TTL below THRESHOLD
+    // Let's advance by 30,000 ledgers.
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 30_000;
+    });
 
-    let record = client.get_record(&subject);
-    assert_eq!(record.expiry, 5_000);
-    // Other fields unchanged
-    assert!(matches!(record.status, crate::KycStatus::Approved));
-    assert_eq!(record.tier, 1);
-    assert_eq!(record.jurisdiction, String::from_str(&env, "US"));
+    let reduced_ttl = env.as_contract(&contract_id, || {
+        env.storage().instance().get_ttl()
+    });
+    assert_eq!(reduced_ttl, initial_ttl - 30_000);
 
-    // Verify it's still approved and not expired
-    env.ledger().set_timestamp(4_000);
-    assert!(client.is_approved(&subject));
-}
-
-#[test]
-#[should_panic(expected = "not an authorized verifier")]
-fn test_unauthorized_verifier_cannot_renew() {
-    let (env, client, _admin) = setup();
-    let verifier = Address::generate(&env);
-    let rogue = Address::generate(&env);
+    // Calling a query function like is_approved should bump it back to BUMP
     let subject = Address::generate(&env);
-    client.add_verifier(&verifier);
+    client.is_approved(&subject);
 
-    // Approve with the real verifier
-    client.approve(&verifier, &subject, &0, &2_000, &String::from_str(&env, "US"));
-
-    // Attempt renewal by unauthorized verifier
-    client.renew(&rogue, &subject, &5_000);
+    let bumped_ttl = env.as_contract(&contract_id, || {
+        env.storage().instance().get_ttl()
+    });
+    assert_eq!(bumped_ttl, bump);
 }

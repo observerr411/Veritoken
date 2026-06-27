@@ -133,7 +133,7 @@ The kit is designed to be forked and customised:
 - [ ] SEP-41 compliance verification against the full standard
 - [ ] Stellar CLI task runner for common admin operations
 - [ ] Audit by an independent Soroban security reviewer
-- [ ] Mainnet deployment guide with production checklist
+- [x] Mainnet deployment guide with production checklist — see [docs/mainnet-deployment.md](docs/mainnet-deployment.md)
 - [ ] TypeScript SDK wrapping contract clients for frontend developers
 
 ---
@@ -159,6 +159,18 @@ Veritoken/
 │   └── setup-identity.sh       # Create and fund testnet identity
 └── .github/workflows/ci.yml    # Build and type-check on every push
 ```
+
+---
+
+## Security
+
+To report a vulnerability, please follow the [Security Policy](SECURITY.md). Do not open a public issue for security findings.
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a full history of changes and the versioning policy.
 
 ---
 

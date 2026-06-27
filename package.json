@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "sdk"
+  ],
+  "scripts": {
+    "build:sdk": "npm --workspace sdk run build"
+  }
+}

@@ -20,6 +20,93 @@ export const CONTRACT_IDS = {
   carbonToken: import.meta.env.VITE_CARBON_TOKEN_ID ?? "",
 };
 
+// Error code tables matching each contract's #[contracterror] enum discriminants.
+const KYC_ERRORS: Record<number, string> = {
+  1: "Contract already initialized",
+  2: "Not an authorized verifier",
+  3: "KYC not approved",
+  4: "No KYC record found",
+};
+
+const COMPLIANCE_ERRORS: Record<number, string> = {
+  1: "Contract already initialized",
+};
+
+const INVOICE_ERRORS: Record<number, string> = {
+  1: "Contract already initialized",
+  2: "Invoice already settled",
+  3: "Invoice not yet settled",
+  4: "Insufficient balance",
+  5: "Negative amount",
+  6: "Insufficient allowance",
+  7: "Allowance expired",
+  8: "KYC not approved",
+  9: "Redemption blocked: compliance paused",
+  10: "Redemption blocked: holder is blocklisted",
+  11: "Transfer blocked by compliance engine",
+};
+
+const RWA_ERRORS: Record<number, string> = {
+  1: "Contract already initialized",
+  2: "KYC not approved",
+  3: "Transfer blocked by compliance engine",
+  4: "Insufficient balance",
+  5: "Allowance expiration ledger is in the past",
+  6: "Insufficient allowance",
+};
+
+const PROPERTY_ERRORS: Record<number, string> = {
+  1: "Contract already initialized",
+  2: "Shares must be positive",
+  3: "Insufficient shares",
+  4: "No shares issued",
+  5: "KYC not approved",
+  6: "KYC tier below property requirement",
+  7: "Mint blocked: compliance paused",
+  8: "Mint recipient is blocklisted",
+  9: "Transfer blocked by compliance engine",
+};
+
+const CARBON_ERRORS: Record<number, string> = {
+  1: "Contract already initialized",
+  2: "Insufficient balance",
+  3: "KYC not approved",
+  4: "Mint blocked: compliance paused",
+  5: "Mint recipient is blocklisted",
+  6: "Transfer blocked by compliance engine",
+};
+
+type ContractType =
+  | "kyc"
+  | "compliance"
+  | "invoice"
+  | "rwa"
+  | "property"
+  | "carbon";
+
+const ERROR_TABLES: Record<ContractType, Record<number, string>> = {
+  kyc: KYC_ERRORS,
+  compliance: COMPLIANCE_ERRORS,
+  invoice: INVOICE_ERRORS,
+  rwa: RWA_ERRORS,
+  property: PROPERTY_ERRORS,
+  carbon: CARBON_ERRORS,
+};
+
+/**
+ * Decodes a numeric Soroban contract error code into a human-readable message.
+ * The contractType identifies which contract's error table to look up.
+ */
+export function decodeContractError(
+  contractType: ContractType,
+  code: number
+): string {
+  return (
+    ERROR_TABLES[contractType]?.[code] ??
+    `Unknown contract error (type=${contractType}, code=${code})`
+  );
+}
+
 export async function simulateAndSend(
   xdr: string,
   signTx: (xdr: string) => Promise<string>
@@ -29,7 +116,14 @@ export async function simulateAndSend(
   );
 
   if (rpc.Api.isSimulationError(simResult)) {
-    throw new Error(`Simulation failed: ${simResult.error}`);
+    const errorMsg = simResult.error;
+    // Attempt to extract a numeric error code from the simulation error string.
+    const codeMatch = errorMsg.match(/\(code=(\d+)\)/);
+    if (codeMatch) {
+      const code = parseInt(codeMatch[1], 10);
+      throw new Error(`Contract error: ${decodeContractError("rwa", code)}`);
+    }
+    throw new Error(`Simulation failed: ${errorMsg}`);
   }
 
   const prepared = rpc
