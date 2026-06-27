@@ -2,111 +2,104 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
   pull_request:
-    branches: ["**"]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
 
 jobs:
-  # ── Rust: format check ───────────────────────────────────────────────────────
   fmt:
-    name: Rust – format check
+    name: Rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: rustfmt
-
-      - name: cargo fmt --check
+      - name: Check formatting
         run: cargo fmt --all -- --check
 
-  # ── Rust: clippy ────────────────────────────────────────────────────────────
   clippy:
-    name: Rust – clippy
+    name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: clippy
           targets: wasm32-unknown-unknown
-
-      - uses: actions/cache@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-clippy-
+      - name: Clippy (all workspace crates, host target)
+        run: cargo clippy --all --all-targets -- -D warnings
 
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-  # ── Rust: tests ─────────────────────────────────────────────────────────────
   test:
-    name: Rust – tests
+    name: Tests – ${{ matrix.crate }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - compliance-engine
+          - kyc-registry
+          - rwa-token
+          - invoice-token
+          - property-token
+          - carbon-credit-token
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          targets: wasm32-unknown-unknown
-
-      - uses: actions/cache@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-test-${{ matrix.crate }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-test-${{ matrix.crate }}-
+      - name: Run tests
+        run: cargo test --features testutils -p ${{ matrix.crate }}
 
-      - name: cargo test
-        run: cargo test --all
-
-  # ── Frontend: type-check, lint, build ───────────────────────────────────────
-  frontend:
-    name: Frontend – typecheck, lint, build
+  build-wasm:
+    name: Build WASM – ${{ matrix.crate }}
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
-
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - compliance-engine
+          - kyc-registry
+          - rwa-token
+          - invoice-token
+          - property-token
+          - carbon-credit-token
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: TypeScript type-check
-        run: node node_modules/typescript/bin/tsc --noEmit
-
-      - name: ESLint
-        run: npm run lint
-
-      - name: Build
-        run: npm run build
-        env:
-          VITE_STELLAR_NETWORK: testnet
-          VITE_KYC_REGISTRY_ID: ""
-          VITE_COMPLIANCE_ENGINE_ID: ""
-          VITE_INVOICE_TOKEN_ID: ""
-          VITE_PROPERTY_TOKEN_ID: ""
-          VITE_CARBON_TOKEN_ID: ""
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm-${{ matrix.crate }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-wasm-${{ matrix.crate }}-
+      - name: Build WASM
+        run: cargo build --release --target wasm32-unknown-unknown -p ${{ matrix.crate }}

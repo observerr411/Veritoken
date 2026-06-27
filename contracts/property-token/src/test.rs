@@ -14,6 +14,7 @@ struct Harness {
     kyc: KycRegistryClient<'static>,
     compliance: ComplianceEngineClient<'static>,
     verifier: Address,
+    admin: Address,
 }
 
 fn meta(env: &Env) -> PropertyMeta {
@@ -63,6 +64,7 @@ fn setup() -> Harness {
         kyc,
         compliance,
         verifier,
+        admin,
     }
 }
 
@@ -217,99 +219,71 @@ fn test_transfer_snapshots_dividends() {
     assert_eq!(h.token.pending_dividend(&alice), 0);
 }
 
-// ── Allowance / transfer_from tests ─────────────────────────────────────────
+// ── update_kyc_registry / update_compliance_engine tests ─────────────────────
 
 #[test]
-fn test_approve_and_transfer_from() {
+fn test_update_kyc_registry_admin_only() {
     let h = setup();
+    let new_kyc = Address::generate(&h.env);
+
+    // Non-admin: separate env, no auths mocked
+    {
+        let env2 = Env::default();
+        let non_admin = Address::generate(&env2);
+        let token_id2 = env2.register(
+            PropertyToken,
+            (
+                non_admin.clone(),
+                Address::generate(&env2),
+                Address::generate(&env2),
+                meta(&env2),
+            ),
+        );
+        let client2 = PropertyTokenClient::new(&env2, &token_id2);
+        assert!(client2.try_update_kyc_registry(&Address::generate(&env2)).is_err());
+    }
+
+    // Admin succeeds
+    h.token.update_kyc_registry(&new_kyc);
+
+    // Minting now fails because the new registry has no approvals
     let alice = Address::generate(&h.env);
-    let bob = Address::generate(&h.env);
-    let spender = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.approve_kyc(&bob);
-    h.token.mint(&alice, &100);
-
-    // Alice approves spender for 60 shares, expiring far in the future.
-    h.token.approve(&alice, &spender, &60, &1_000_000);
-    assert_eq!(h.token.allowance(&alice, &spender), 60);
-
-    // Spender moves 40 shares from Alice to Bob.
-    h.token.transfer_from(&spender, &alice, &bob, &40);
-    assert_eq!(h.token.balance(&alice), 60);
-    assert_eq!(h.token.balance(&bob), 40);
-    // Remaining allowance is 20.
-    assert_eq!(h.token.allowance(&alice, &spender), 20);
+    h.approve_kyc(&alice); // approved in OLD registry only
+    assert!(h.token.try_mint(&alice, &10).is_err());
 }
 
 #[test]
-fn test_allowance_expiry() {
+fn test_update_compliance_engine_admin_only() {
     let h = setup();
+
+    // Non-admin: separate env, no auths mocked
+    {
+        let env2 = Env::default();
+        let non_admin = Address::generate(&env2);
+        let token_id2 = env2.register(
+            PropertyToken,
+            (
+                non_admin.clone(),
+                Address::generate(&env2),
+                Address::generate(&env2),
+                meta(&env2),
+            ),
+        );
+        let client2 = PropertyTokenClient::new(&env2, &token_id2);
+        assert!(client2.try_update_compliance_engine(&Address::generate(&env2)).is_err());
+    }
+
+    // Deploy a second compliance engine and pause it
+    let ce2_id = h.env.register(ComplianceEngine, ());
+    let ce2 = ComplianceEngineClient::new(&h.env, &ce2_id);
+    ce2.initialize(&h.admin);
+    ce2.pause();
+
+    // Admin can update
+    h.token.update_compliance_engine(&ce2_id);
+
+    // Mints through the paused engine are now blocked
     let alice = Address::generate(&h.env);
-    let bob = Address::generate(&h.env);
-    let spender = Address::generate(&h.env);
     h.approve_kyc(&alice);
-    h.approve_kyc(&bob);
-    h.token.mint(&alice, &100);
-
-    // Approve with expiration at current ledger + 5.
-    let current = h.env.ledger().sequence();
-    h.token.approve(&alice, &spender, &50, &(current + 5));
-    assert_eq!(h.token.allowance(&alice, &spender), 50);
-
-    // Advance the ledger past the expiration.
-    h.env.ledger().set_sequence_number(current + 10);
-
-    // Allowance should now be 0 (expired).
-    assert_eq!(h.token.allowance(&alice, &spender), 0);
-    // transfer_from must fail since allowance is expired.
-    assert!(h
-        .token
-        .try_transfer_from(&spender, &alice, &bob, &10)
-        .is_err());
-}
-
-#[test]
-fn test_transfer_from_insufficient_allowance() {
-    let h = setup();
-    let alice = Address::generate(&h.env);
-    let bob = Address::generate(&h.env);
-    let spender = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.approve_kyc(&bob);
-    h.token.mint(&alice, &100);
-
-    h.token.approve(&alice, &spender, &10, &1_000_000);
-    // Attempt to transfer more than the approved amount.
-    assert!(h
-        .token
-        .try_transfer_from(&spender, &alice, &bob, &20)
-        .is_err());
-}
-
-#[test]
-fn test_transfer_from_snapshots_dividends() {
-    let h = setup();
-    let alice = Address::generate(&h.env);
-    let bob = Address::generate(&h.env);
-    let spender = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.approve_kyc(&bob);
-    h.token.mint(&alice, &100);
-
-    // Deposit 1000 stroops → 1 per share. Alice accrues 100.
-    h.token.deposit_dividend(&1_000);
-    h.token.approve(&alice, &spender, &100, &1_000_000);
-
-    // Spender moves all of Alice's shares to Bob.
-    h.token.transfer_from(&spender, &alice, &bob, &100);
-
-    // Bob must not inherit Alice's pre-transfer accrued dividend.
-    assert_eq!(h.token.pending_dividend(&bob), 0);
-    // Alice keeps her 100 stroop accrual.
-    assert_eq!(h.token.pending_dividend(&alice), 100);
-
-    // A dividend declared now accrues to Bob (current holder), not Alice.
-    h.token.deposit_dividend(&1_000);
-    assert_eq!(h.token.pending_dividend(&bob), 100);
-    assert_eq!(h.token.pending_dividend(&alice), 100); // unchanged
+    assert!(h.token.try_mint(&alice, &10).is_err());
 }

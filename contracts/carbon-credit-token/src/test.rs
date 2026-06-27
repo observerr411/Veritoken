@@ -11,6 +11,7 @@ struct Harness {
     kyc: KycRegistryClient<'static>,
     compliance: ComplianceEngineClient<'static>,
     verifier: Address,
+    admin: Address,
 }
 
 fn meta(env: &Env) -> ProjectMeta {
@@ -39,7 +40,7 @@ fn setup() -> Harness {
 
     let compliance_id = env.register(ComplianceEngine, ());
     let compliance = ComplianceEngineClient::new(&env, &compliance_id);
-    compliance.initialize(&admin);
+    compliance.initialize(&admin, &kyc_id);
 
     // Carbon credit token — constructor args passed atomically at register time
     let token_id = env.register(
@@ -59,6 +60,7 @@ fn setup() -> Harness {
         kyc,
         compliance,
         verifier,
+        admin,
     }
 }
 
@@ -188,6 +190,19 @@ fn test_retire_insufficient_balance() {
 }
 
 #[test]
+fn test_mint_twice_same_address_holder_count_is_one() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+
+    h.token.mint(&alice, &100);
+    h.token.mint(&alice, &50);
+
+    assert_eq!(h.compliance.holder_count(), 1);
+    assert_eq!(h.token.balance(&alice), 150);
+}
+
+#[test]
 fn test_non_deployer_cannot_reinitialize() {
     let h = setup();
     let attacker = Address::generate(&h.env);
@@ -198,4 +213,93 @@ fn test_non_deployer_cannot_reinitialize() {
         .token
         .try_initialize(&attacker, &kyc_id, &ce_id, &meta(&h.env));
     assert!(result.is_err());
+}
+
+// ── update_kyc_registry / update_compliance_engine tests ─────────────────────
+
+#[test]
+fn test_update_kyc_registry_admin_only() {
+    let h = setup();
+    let new_kyc = Address::generate(&h.env);
+
+    // Non-admin: separate env, no auths mocked
+    {
+        let env2 = Env::default();
+        let non_admin = Address::generate(&env2);
+        let token_id2 = env2.register(
+            CarbonCreditToken,
+            (
+                non_admin.clone(),
+                Address::generate(&env2),
+                Address::generate(&env2),
+                meta(&env2),
+            ),
+        );
+        let client2 = CarbonCreditTokenClient::new(&env2, &token_id2);
+        assert!(client2.try_update_kyc_registry(&Address::generate(&env2)).is_err());
+    }
+
+    // Admin succeeds
+    h.token.update_kyc_registry(&new_kyc);
+
+    // Minting now fails because the new registry has no approvals
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice); // approved in OLD registry only
+    assert!(h.token.try_mint(&alice, &10).is_err());
+}
+
+#[test]
+fn test_update_compliance_engine_admin_only() {
+    let h = setup();
+
+    // Non-admin: separate env, no auths mocked
+    {
+        let env2 = Env::default();
+        let non_admin = Address::generate(&env2);
+        let token_id2 = env2.register(
+            CarbonCreditToken,
+            (
+                non_admin.clone(),
+                Address::generate(&env2),
+                Address::generate(&env2),
+                meta(&env2),
+            ),
+        );
+        let client2 = CarbonCreditTokenClient::new(&env2, &token_id2);
+        assert!(client2.try_update_compliance_engine(&Address::generate(&env2)).is_err());
+    }
+
+    // Deploy a second compliance engine and pause it
+    let ce2_id = h.env.register(ComplianceEngine, ());
+    let ce2 = ComplianceEngineClient::new(&h.env, &ce2_id);
+    ce2.initialize(&h.admin);
+    ce2.pause();
+
+    // Admin can update
+    h.token.update_compliance_engine(&ce2_id);
+
+    // Mints through the paused engine are now blocked
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    assert!(h.token.try_mint(&alice, &10).is_err());
+}
+
+#[test]
+fn test_update_compliance_engine_affects_transfers() {
+    let h = setup();
+
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &100);
+
+    // Deploy and switch to a paused engine
+    let ce2_id = h.env.register(ComplianceEngine, ());
+    let ce2 = ComplianceEngineClient::new(&h.env, &ce2_id);
+    ce2.initialize(&h.admin);
+    ce2.pause();
+
+    h.token.update_compliance_engine(&ce2_id);
+    assert!(h.token.try_transfer(&alice, &bob, &10).is_err());
 }

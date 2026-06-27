@@ -64,6 +64,22 @@ impl RwaToken {
             .publish((symbol_short!("admin"),), (admin, new_admin));
     }
 
+    pub fn update_kyc_registry(env: Env, new_registry: Address) {
+        let admin = admin::read_admin(&env);
+        admin.require_auth();
+        kyc::write_kyc_registry(&env, &new_registry);
+        env.events()
+            .publish((symbol_short!("upd_kyc"),), new_registry);
+    }
+
+    pub fn update_compliance_engine(env: Env, new_engine: Address) {
+        let admin = admin::read_admin(&env);
+        admin.require_auth();
+        compliance::write_compliance_engine(&env, &new_engine);
+        env.events()
+            .publish((symbol_short!("upd_ce"),), new_engine);
+    }
+
     // ── SEP-41 Token Interface ───────────────────────────────────────────────
 
     pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
@@ -193,7 +209,6 @@ impl RwaToken {
         }
         let supply = balance::read_total_supply(&env);
         balance::write_total_supply(&env, supply + amount);
-        compliance::register_holder(&env, &to);
         env.events().publish((symbol_short!("mint"), to), amount);
     }
 

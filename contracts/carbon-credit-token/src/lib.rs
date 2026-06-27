@@ -92,6 +92,28 @@ impl CarbonCreditToken {
         panic!("already initialized");
     }
 
+    // ── Admin ─────────────────────────────────────────────────────────────────
+
+    pub fn update_kyc_registry(env: Env, new_registry: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::KycRegistry, &new_registry);
+        env.events()
+            .publish((symbol_short!("upd_kyc"),), new_registry);
+    }
+
+    pub fn update_compliance_engine(env: Env, new_engine: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::ComplianceEngine, &new_engine);
+        env.events()
+            .publish((symbol_short!("upd_ce"),), new_engine);
+    }
+
     // ── Metadata ─────────────────────────────────────────────────────────────
 
     pub fn get_meta(env: Env) -> ProjectMeta {

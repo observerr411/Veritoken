@@ -104,9 +104,32 @@ impl PropertyToken {
         panic!("already initialized");
     }
 
+    // ── Admin ─────────────────────────────────────────────────────────────────
+
+    pub fn update_kyc_registry(env: Env, new_registry: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::KycRegistry, &new_registry);
+        env.events()
+            .publish((symbol_short!("upd_kyc"),), new_registry);
+    }
+
+    pub fn update_compliance_engine(env: Env, new_engine: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::ComplianceEngine, &new_engine);
+        env.events()
+            .publish((symbol_short!("upd_ce"),), new_engine);
+    }
+
     // ── Metadata ─────────────────────────────────────────────────────────────
 
     pub fn get_meta(env: Env) -> PropertyMeta {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
             .instance()
             .get(&DataKey::PropertyMeta)
@@ -114,22 +137,26 @@ impl PropertyToken {
     }
 
     pub fn name(env: Env) -> String {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         String::from_str(&env, "Veritoken Property")
     }
     pub fn symbol(env: Env) -> String {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         String::from_str(&env, "VTPROP")
     }
-    pub fn decimals(_env: Env) -> u32 {
+    pub fn decimals(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         0
     }
 
     // ── Share management ─────────────────────────────────────────────────────
 
     pub fn mint(env: Env, to: Address, shares: i128) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
         Self::require_kyc(&env, &to);
         Self::require_tier(&env, &to);
-        Self::check_mint_compliance(&env, &to);
+        Self::check_mint_compliance(&env, &to, shares);
         if shares <= 0 {
             panic!("shares must be positive");
         }
@@ -145,6 +172,7 @@ impl PropertyToken {
     }
 
     pub fn transfer(env: Env, from: Address, to: Address, shares: i128) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
         Self::require_kyc(&env, &from);
         Self::require_kyc(&env, &to);
@@ -244,6 +272,7 @@ impl PropertyToken {
 
     /// Deposit dividend amount (in stroops) to be distributed pro-rata.
     pub fn deposit_dividend(env: Env, amount: i128) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
         let total: i128 = env.storage().instance().get(&DataKey::TotalShares).unwrap();
         if total == 0 {
@@ -270,6 +299,7 @@ impl PropertyToken {
     }
 
     pub fn claim_dividend(env: Env, holder: Address) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         holder.require_auth();
         // Fold any newly accrued dividends into the unclaimed accumulator.
         Self::accrue(&env, holder.clone());
@@ -293,6 +323,7 @@ impl PropertyToken {
     }
 
     pub fn pending_dividend(env: Env, holder: Address) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let unclaimed: i128 = env
             .storage()
             .instance()
@@ -302,9 +333,11 @@ impl PropertyToken {
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::read_balance(&env, id)
     }
     pub fn total_shares(env: Env) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
             .instance()
             .get(&DataKey::TotalShares)
@@ -377,18 +410,16 @@ impl PropertyToken {
         }
     }
 
-    fn check_mint_compliance(env: &Env, to: &Address) {
+    fn check_mint_compliance(env: &Env, to: &Address, shares: i128) {
         let engine: Address = env
             .storage()
             .instance()
             .get(&DataKey::ComplianceEngine)
             .unwrap();
         let client = ComplianceEngineClient::new(env, &engine);
-        if client.get_rules().paused {
-            panic!("mint blocked by compliance pause");
-        }
-        if client.is_blocklisted(to) {
-            panic!("mint recipient is blocklisted");
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if !client.can_transfer(&admin, to, &shares) {
+            panic!("mint blocked by compliance");
         }
     }
 

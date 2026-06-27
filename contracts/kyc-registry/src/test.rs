@@ -2,7 +2,7 @@
 
 use crate::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{storage::Instance, Address as _, Ledger},
     Address, Env, String,
 };
 
@@ -141,4 +141,44 @@ fn test_remove_verifier() {
     let subject = Address::generate(&env);
     let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "US"));
     assert!(res.is_err());
+}
+
+#[test]
+fn test_instance_ttl_bump() {
+    let (env, client, _admin) = setup();
+    let contract_id = client.address.clone();
+
+    // The constants defined in lib.rs:
+    // const DAY_IN_LEDGERS: u32 = 17280;
+    // const BUMP: u32 = 30 * DAY_IN_LEDGERS; // 518400 ledgers
+    let bump = 30 * 17280;
+
+    // Initially, calling add_verifier will bump the TTL to bump (518400 ledgers)
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    let initial_ttl = env.as_contract(&contract_id, || {
+        env.storage().instance().get_ttl()
+    });
+    assert_eq!(initial_ttl, bump);
+
+    // Advance the ledger sequence to decrease TTL below THRESHOLD
+    // Let's advance by 30,000 ledgers.
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 30_000;
+    });
+
+    let reduced_ttl = env.as_contract(&contract_id, || {
+        env.storage().instance().get_ttl()
+    });
+    assert_eq!(reduced_ttl, initial_ttl - 30_000);
+
+    // Calling a query function like is_approved should bump it back to BUMP
+    let subject = Address::generate(&env);
+    client.is_approved(&subject);
+
+    let bumped_ttl = env.as_contract(&contract_id, || {
+        env.storage().instance().get_ttl()
+    });
+    assert_eq!(bumped_ttl, bump);
 }

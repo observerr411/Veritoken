@@ -62,8 +62,8 @@ mod compliance_interface {
     #[allow(dead_code)]
     pub trait ComplianceEngineInterface {
         fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
-        fn register_holder(env: soroban_sdk::Env, addr: Address);
-        fn unregister_holder(env: soroban_sdk::Env, addr: Address);
+        fn register_holder(env: soroban_sdk::Env, addr: &Address);
+        fn unregister_holder(env: soroban_sdk::Env, addr: &Address);
         fn holder_count(env: soroban_sdk::Env) -> u32;
     }
 }

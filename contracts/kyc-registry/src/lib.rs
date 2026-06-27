@@ -44,12 +44,14 @@ impl KycRegistry {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
         }
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
     // ── Verifier management ──────────────────────────────────────────────────
 
     pub fn add_verifier(env: Env, verifier: Address) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
         let mut list = Self::verifier_list(&env);
         if !list.contains(&verifier) {
@@ -60,6 +62,7 @@ impl KycRegistry {
     }
 
     pub fn remove_verifier(env: Env, verifier: Address) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
         let list = Self::verifier_list(&env);
         let mut new_list: Vec<Address> = Vec::new(&env);
@@ -83,6 +86,7 @@ impl KycRegistry {
         expiry: u64,
         jurisdiction: String,
     ) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         verifier.require_auth();
         Self::require_verifier(&env, &verifier);
         let record = KycRecord {
@@ -98,6 +102,7 @@ impl KycRegistry {
     }
 
     pub fn reject(env: Env, verifier: Address, subject: Address) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         verifier.require_auth();
         Self::require_verifier(&env, &verifier);
         let mut record = Self::get_record_or_default(&env, subject.clone(), &verifier);
@@ -108,6 +113,7 @@ impl KycRegistry {
     }
 
     pub fn revoke(env: Env, verifier: Address, subject: Address) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         verifier.require_auth();
         Self::require_verifier(&env, &verifier);
         let mut record = Self::get_record_or_default(&env, subject.clone(), &verifier);
@@ -121,6 +127,7 @@ impl KycRegistry {
 
     /// Returns true if the address has an active, non-expired KYC approval.
     pub fn is_approved(env: Env, addr: Address) -> bool {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let key = DataKey::KycStatus(addr);
         if let Some(record) = env.storage().persistent().get::<DataKey, KycRecord>(&key) {
             if record.status != KycStatus::Approved {
@@ -136,6 +143,7 @@ impl KycRegistry {
     }
 
     pub fn get_record(env: &Env, addr: Address) -> KycRecord {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
             .persistent()
             .get(&DataKey::KycStatus(addr))
@@ -143,6 +151,7 @@ impl KycRegistry {
     }
 
     pub fn get_tier(env: Env, addr: Address) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::get_record(&env, addr).tier
     }
 
