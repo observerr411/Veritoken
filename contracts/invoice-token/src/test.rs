@@ -47,7 +47,6 @@ fn setup() -> Harness {
     let compliance = ComplianceEngineClient::new(&env, &compliance_id);
     compliance.initialize(&admin);
 
-    // Invoice token — constructor args passed atomically at register time
     let token_id = env.register(
         InvoiceToken,
         (
