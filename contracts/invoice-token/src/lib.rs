@@ -61,7 +61,9 @@ pub struct InvoiceMeta {
     pub discount_rate_bps: u32, // basis points
     pub due_date: u64,          // Unix timestamp
     pub currency: String,
-    pub ipfs_doc_hash: String, // off-chain document anchor
+    pub ipfs_doc_hash: String,      // off-chain document anchor
+    pub transfer_fee_bps: u32,      // platform fee in basis points; 0 = no fee
+    pub fee_recipient: Option<Address>, // receives transfer_fee_bps cut on each transfer
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -135,6 +137,21 @@ impl InvoiceToken {
     pub fn get_meta(env: Env) -> InvoiceMeta {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage().instance().get(&DataKey::InvoiceMeta).unwrap()
+    }
+
+    /// Replace the stored invoice metadata. Admin-only; panics if already settled.
+    pub fn update_meta(env: Env, new_meta: InvoiceMeta) {
+        Self::require_admin(&env);
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::Settled)
+            .unwrap_or(false)
+        {
+            panic!("invoice already settled");
+        }
+        env.storage().instance().set(&DataKey::InvoiceMeta, &new_meta);
+        env.events().publish((symbol_short!("upd_meta"),), ());
     }
 
     pub fn name(env: Env) -> String {

@@ -28,6 +28,8 @@ fn meta(env: &Env) -> InvoiceMeta {
         due_date: 1_900_000_000,
         currency: String::from_str(env, "USD"),
         ipfs_doc_hash: String::from_str(env, "Qm..."),
+        transfer_fee_bps: 0,
+        fee_recipient: None,
     }
 }
 
@@ -201,7 +203,6 @@ fn test_non_deployer_cannot_reinitialize() {
     let attacker = Address::generate(&h.env);
     let kyc_id = Address::generate(&h.env);
     let ce_id = Address::generate(&h.env);
-    // initialize must always panic — the constructor has already run
     let result = h
         .token
         .try_initialize(&attacker, &kyc_id, &ce_id, &meta(&h.env));
