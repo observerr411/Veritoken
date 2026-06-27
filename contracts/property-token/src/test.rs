@@ -3,7 +3,10 @@
 use crate::{PropertyMeta, PropertyToken, PropertyTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env, String,
+};
 
 struct Harness {
     env: Env,
@@ -11,6 +14,7 @@ struct Harness {
     kyc: KycRegistryClient<'static>,
     compliance: ComplianceEngineClient<'static>,
     verifier: Address,
+    admin: Address,
 }
 
 fn meta(env: &Env) -> PropertyMeta {
@@ -60,6 +64,7 @@ fn setup() -> Harness {
         kyc,
         compliance,
         verifier,
+        admin,
     }
 }
 
@@ -212,4 +217,73 @@ fn test_transfer_snapshots_dividends() {
     h.token.deposit_dividend(&1_000);
     assert_eq!(h.token.pending_dividend(&bob), 100);
     assert_eq!(h.token.pending_dividend(&alice), 0);
+}
+
+// ── update_kyc_registry / update_compliance_engine tests ─────────────────────
+
+#[test]
+fn test_update_kyc_registry_admin_only() {
+    let h = setup();
+    let new_kyc = Address::generate(&h.env);
+
+    // Non-admin: separate env, no auths mocked
+    {
+        let env2 = Env::default();
+        let non_admin = Address::generate(&env2);
+        let token_id2 = env2.register(
+            PropertyToken,
+            (
+                non_admin.clone(),
+                Address::generate(&env2),
+                Address::generate(&env2),
+                meta(&env2),
+            ),
+        );
+        let client2 = PropertyTokenClient::new(&env2, &token_id2);
+        assert!(client2.try_update_kyc_registry(&Address::generate(&env2)).is_err());
+    }
+
+    // Admin succeeds
+    h.token.update_kyc_registry(&new_kyc);
+
+    // Minting now fails because the new registry has no approvals
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice); // approved in OLD registry only
+    assert!(h.token.try_mint(&alice, &10).is_err());
+}
+
+#[test]
+fn test_update_compliance_engine_admin_only() {
+    let h = setup();
+
+    // Non-admin: separate env, no auths mocked
+    {
+        let env2 = Env::default();
+        let non_admin = Address::generate(&env2);
+        let token_id2 = env2.register(
+            PropertyToken,
+            (
+                non_admin.clone(),
+                Address::generate(&env2),
+                Address::generate(&env2),
+                meta(&env2),
+            ),
+        );
+        let client2 = PropertyTokenClient::new(&env2, &token_id2);
+        assert!(client2.try_update_compliance_engine(&Address::generate(&env2)).is_err());
+    }
+
+    // Deploy a second compliance engine and pause it
+    let ce2_id = h.env.register(ComplianceEngine, ());
+    let ce2 = ComplianceEngineClient::new(&h.env, &ce2_id);
+    ce2.initialize(&h.admin);
+    ce2.pause();
+
+    // Admin can update
+    h.token.update_compliance_engine(&ce2_id);
+
+    // Mints through the paused engine are now blocked
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    assert!(h.token.try_mint(&alice, &10).is_err());
 }

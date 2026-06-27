@@ -26,6 +26,22 @@ pub enum DataKey {
     /// on every balance change so transfers never move accrued dividends.
     Unclaimed(Address),
     DividendPerShare,
+    /// SEP-41 delegated-transfer allowance: (owner, spender) → AllowanceValue.
+    Allowance(AllowanceKey),
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AllowanceKey {
+    pub from: Address,
+    pub spender: Address,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AllowanceValue {
+    pub amount: i128,
+    pub expiration_ledger: u32,
 }
 
 #[contracttype]
@@ -88,9 +104,32 @@ impl PropertyToken {
         panic!("already initialized");
     }
 
+    // ── Admin ─────────────────────────────────────────────────────────────────
+
+    pub fn update_kyc_registry(env: Env, new_registry: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::KycRegistry, &new_registry);
+        env.events()
+            .publish((symbol_short!("upd_kyc"),), new_registry);
+    }
+
+    pub fn update_compliance_engine(env: Env, new_engine: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::ComplianceEngine, &new_engine);
+        env.events()
+            .publish((symbol_short!("upd_ce"),), new_engine);
+    }
+
     // ── Metadata ─────────────────────────────────────────────────────────────
 
     pub fn get_meta(env: Env) -> PropertyMeta {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
             .instance()
             .get(&DataKey::PropertyMeta)
@@ -98,22 +137,26 @@ impl PropertyToken {
     }
 
     pub fn name(env: Env) -> String {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         String::from_str(&env, "Veritoken Property")
     }
     pub fn symbol(env: Env) -> String {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         String::from_str(&env, "VTPROP")
     }
-    pub fn decimals(_env: Env) -> u32 {
+    pub fn decimals(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         0
     }
 
     // ── Share management ─────────────────────────────────────────────────────
 
     pub fn mint(env: Env, to: Address, shares: i128) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
         Self::require_kyc(&env, &to);
         Self::require_tier(&env, &to);
-        Self::check_mint_compliance(&env, &to);
+        Self::check_mint_compliance(&env, &to, shares);
         if shares <= 0 {
             panic!("shares must be positive");
         }
@@ -129,6 +172,7 @@ impl PropertyToken {
     }
 
     pub fn transfer(env: Env, from: Address, to: Address, shares: i128) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
         Self::require_kyc(&env, &from);
         Self::require_kyc(&env, &to);
@@ -154,10 +198,81 @@ impl PropertyToken {
             .publish((symbol_short!("transfer"), from, to), shares);
     }
 
+    // ── SEP-41 Allowance / Delegated Transfer ───────────────────────────────
+
+    /// Approve `spender` to transfer up to `amount` shares on behalf of `from`.
+    /// The allowance expires at `expiration_ledger` (inclusive). Passing
+    /// `amount = 0` revokes an existing allowance.
+    pub fn approve(
+        env: Env,
+        from: Address,
+        spender: Address,
+        amount: i128,
+        expiration_ledger: u32,
+    ) {
+        from.require_auth();
+        if amount > 0 && expiration_ledger < env.ledger().sequence() {
+            panic!("expiration_ledger is in the past");
+        }
+        let key = DataKey::Allowance(AllowanceKey {
+            from: from.clone(),
+            spender: spender.clone(),
+        });
+        let value = AllowanceValue {
+            amount,
+            expiration_ledger,
+        };
+        env.storage().temporary().set(&key, &value);
+        if amount > 0 {
+            let ttl = expiration_ledger - env.ledger().sequence();
+            env.storage().temporary().extend_ttl(&key, ttl, ttl);
+        }
+        env.events().publish(
+            (symbol_short!("approve"), from, spender),
+            (amount, expiration_ledger),
+        );
+    }
+
+    /// Returns the number of shares `spender` is allowed to transfer on behalf
+    /// of `from`. Returns 0 if no allowance exists or it has expired.
+    pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
+        Self::read_allowance(&env, from, spender).amount
+    }
+
+    /// Transfer `shares` from `from` to `to` using a previously approved
+    /// allowance. Runs the full compliance and dividend-snapshot logic.
+    pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, shares: i128) {
+        spender.require_auth();
+        Self::require_kyc(&env, &from);
+        Self::require_kyc(&env, &to);
+        Self::check_compliance(&env, &from, &to, shares);
+        if shares <= 0 {
+            panic!("shares must be positive");
+        }
+        // Spend the allowance first — panics on insufficient/expired allowance.
+        Self::spend_allowance(&env, from.clone(), spender, shares);
+        // Snapshot accrued dividends for both parties before balances move.
+        Self::accrue(&env, from.clone());
+        Self::accrue(&env, to.clone());
+        let from_bal = Self::read_balance(&env, from.clone());
+        if from_bal < shares {
+            panic!("insufficient shares");
+        }
+        Self::write_balance(&env, from.clone(), from_bal - shares);
+        let to_bal = Self::read_balance(&env, to.clone());
+        Self::write_balance(&env, to.clone(), to_bal + shares);
+        Self::reset_debt(&env, from.clone());
+        Self::reset_debt(&env, to.clone());
+        Self::register_holder(&env, &to);
+        env.events()
+            .publish((symbol_short!("transfer"), from, to), shares);
+    }
+
     // ── Dividends ────────────────────────────────────────────────────────────
 
     /// Deposit dividend amount (in stroops) to be distributed pro-rata.
     pub fn deposit_dividend(env: Env, amount: i128) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
         let total: i128 = env.storage().instance().get(&DataKey::TotalShares).unwrap();
         if total == 0 {
@@ -184,6 +299,7 @@ impl PropertyToken {
     }
 
     pub fn claim_dividend(env: Env, holder: Address) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         holder.require_auth();
         // Fold any newly accrued dividends into the unclaimed accumulator.
         Self::accrue(&env, holder.clone());
@@ -207,6 +323,7 @@ impl PropertyToken {
     }
 
     pub fn pending_dividend(env: Env, holder: Address) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let unclaimed: i128 = env
             .storage()
             .instance()
@@ -216,9 +333,11 @@ impl PropertyToken {
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::read_balance(&env, id)
     }
     pub fn total_shares(env: Env) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
             .instance()
             .get(&DataKey::TotalShares)
@@ -291,18 +410,16 @@ impl PropertyToken {
         }
     }
 
-    fn check_mint_compliance(env: &Env, to: &Address) {
+    fn check_mint_compliance(env: &Env, to: &Address, shares: i128) {
         let engine: Address = env
             .storage()
             .instance()
             .get(&DataKey::ComplianceEngine)
             .unwrap();
         let client = ComplianceEngineClient::new(env, &engine);
-        if client.get_rules().paused {
-            panic!("mint blocked by compliance pause");
-        }
-        if client.is_blocklisted(to) {
-            panic!("mint recipient is blocklisted");
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if !client.can_transfer(&admin, to, &shares) {
+            panic!("mint blocked by compliance");
         }
     }
 
@@ -339,6 +456,59 @@ impl PropertyToken {
         let key = DataKey::Balance(addr);
         env.storage().persistent().set(&key, &amount);
         env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+    }
+
+    // ── Allowance helpers ────────────────────────────────────────────────────
+
+    fn read_allowance(env: &Env, from: Address, spender: Address) -> AllowanceValue {
+        let key = DataKey::Allowance(AllowanceKey {
+            from: from.clone(),
+            spender: spender.clone(),
+        });
+        if let Some(val) = env
+            .storage()
+            .temporary()
+            .get::<DataKey, AllowanceValue>(&key)
+        {
+            if val.expiration_ledger < env.ledger().sequence() {
+                AllowanceValue {
+                    amount: 0,
+                    expiration_ledger: val.expiration_ledger,
+                }
+            } else {
+                val
+            }
+        } else {
+            AllowanceValue {
+                amount: 0,
+                expiration_ledger: 0,
+            }
+        }
+    }
+
+    fn spend_allowance(env: &Env, from: Address, spender: Address, amount: i128) {
+        let allowance = Self::read_allowance(env, from.clone(), spender.clone());
+        if allowance.amount < amount {
+            panic!("insufficient allowance");
+        }
+        let new_amount = allowance.amount - amount;
+        // Rewrite without bumping TTL — expiration is unchanged.
+        let key = DataKey::Allowance(AllowanceKey {
+            from: from.clone(),
+            spender: spender.clone(),
+        });
+        let value = AllowanceValue {
+            amount: new_amount,
+            expiration_ledger: allowance.expiration_ledger,
+        };
+        env.storage().temporary().set(&key, &value);
+        if new_amount > 0 {
+            let current = env.ledger().sequence();
+            if allowance.expiration_ledger > current {
+                let ttl = allowance.expiration_ledger - current;
+                env.storage().temporary().extend_ttl(&key, ttl, ttl);
+            }
+        }
     }
 }
 

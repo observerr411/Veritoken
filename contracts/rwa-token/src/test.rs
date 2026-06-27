@@ -3,7 +3,7 @@
 use crate::{RwaToken, RwaTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 struct Harness {
     env: Env,
@@ -269,4 +269,18 @@ fn test_non_deployer_cannot_reinitialize() {
         &ce_id,
     );
     assert!(result.is_err());
+}
+
+#[test]
+fn test_mint_twice_same_address_holder_count_is_one() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+
+    h.token.mint(&user, &1_000);
+    h.token.mint(&user, &500);
+
+    assert_eq!(h.compliance.holder_count(), 1);
+    assert_eq!(h.token.balance(&user), 1_500);
+    assert_eq!(h.token.total_supply(), 1_500);
 }

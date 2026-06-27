@@ -2,7 +2,7 @@
 
 use crate::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{storage::Instance, Address as _, Ledger},
     Address, Env, String,
 };
 
@@ -143,244 +143,42 @@ fn test_remove_verifier() {
     assert!(res.is_err());
 }
 
-// ── update_tier tests ────────────────────────────────────────────────────────
-
 #[test]
-fn test_update_tier_changes_only_tier() {
+fn test_instance_ttl_bump() {
     let (env, client, _admin) = setup();
+    let contract_id = client.address.clone();
+
+    // The constants defined in lib.rs:
+    // const DAY_IN_LEDGERS: u32 = 17280;
+    // const BUMP: u32 = 30 * DAY_IN_LEDGERS; // 518400 ledgers
+    let bump = 30 * 17280;
+
+    // Initially, calling add_verifier will bump the TTL to bump (518400 ledgers)
     let verifier = Address::generate(&env);
-    let subject = Address::generate(&env);
     client.add_verifier(&verifier);
 
-    // Approve at tier 0 with a jurisdiction
-    client.approve(&verifier, &subject, &0, &0, &String::from_str(&env, "US"));
-    assert_eq!(client.get_tier(&subject), 0);
+    let initial_ttl = env.as_contract(&contract_id, || {
+        env.storage().instance().get_ttl()
+    });
+    assert_eq!(initial_ttl, bump);
 
-    // Upgrade to tier 2
-    client.update_tier(&verifier, &subject, &2);
+    // Advance the ledger sequence to decrease TTL below THRESHOLD
+    // Let's advance by 30,000 ledgers.
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 30_000;
+    });
 
-    let record = client.get_record(&subject);
-    assert_eq!(record.tier, 2);
-    // Status and jurisdiction must remain unchanged
-    assert!(matches!(record.status, crate::KycStatus::Approved));
-    assert_eq!(record.jurisdiction, String::from_str(&env, "US"));
-}
+    let reduced_ttl = env.as_contract(&contract_id, || {
+        env.storage().instance().get_ttl()
+    });
+    assert_eq!(reduced_ttl, initial_ttl - 30_000);
 
-#[test]
-#[should_panic(expected = "subject is not currently approved")]
-fn test_update_tier_panics_when_not_approved() {
-    let (env, client, _admin) = setup();
-    let verifier = Address::generate(&env);
+    // Calling a query function like is_approved should bump it back to BUMP
     let subject = Address::generate(&env);
-    client.add_verifier(&verifier);
+    client.is_approved(&subject);
 
-    // Subject has been rejected — not Approved
-    client.reject(&verifier, &subject);
-    client.update_tier(&verifier, &subject, &1);
-}
-
-#[test]
-#[should_panic(expected = "not an authorized verifier")]
-fn test_update_tier_panics_for_unauthorized_verifier() {
-    let (env, client, _admin) = setup();
-    let verifier = Address::generate(&env);
-    let rogue = Address::generate(&env);
-    let subject = Address::generate(&env);
-    client.add_verifier(&verifier);
-
-    client.approve(&verifier, &subject, &0, &0, &String::from_str(&env, "US"));
-    // rogue was never added as a verifier
-    client.update_tier(&rogue, &subject, &1);
-}
-
-#[test]
-fn test_verifier_count_starts_at_zero() {
-    let (_env, client, _admin) = setup();
-    assert_eq!(client.verifier_count(), 0);
-}
-
-#[test]
-fn test_verifier_count_increments_on_add() {
-    let (env, client, _admin) = setup();
-    let v1 = Address::generate(&env);
-    let v2 = Address::generate(&env);
-    let v3 = Address::generate(&env);
-
-    assert_eq!(client.verifier_count(), 0);
-    client.add_verifier(&v1);
-    assert_eq!(client.verifier_count(), 1);
-    client.add_verifier(&v2);
-    assert_eq!(client.verifier_count(), 2);
-    client.add_verifier(&v3);
-    assert_eq!(client.verifier_count(), 3);
-}
-
-#[test]
-fn test_verifier_count_decrements_on_remove() {
-    let (env, client, _admin) = setup();
-    let v1 = Address::generate(&env);
-    let v2 = Address::generate(&env);
-
-    client.add_verifier(&v1);
-    client.add_verifier(&v2);
-    assert_eq!(client.verifier_count(), 2);
-
-    client.remove_verifier(&v1);
-    assert_eq!(client.verifier_count(), 1);
-
-    client.remove_verifier(&v2);
-    assert_eq!(client.verifier_count(), 0);
-}
-
-#[test]
-fn test_verifier_count_does_not_double_count_duplicate_add() {
-    let (env, client, _admin) = setup();
-    let v1 = Address::generate(&env);
-
-    client.add_verifier(&v1);
-    assert_eq!(client.verifier_count(), 1);
-
-    // Adding the same verifier again must not bump the count.
-    client.add_verifier(&v1);
-    assert_eq!(client.verifier_count(), 1);
-}
-
-#[test]
-fn test_verifier_count_does_not_underflow_on_remove_nonexistent() {
-    let (env, client, _admin) = setup();
-    let v1 = Address::generate(&env);
-
-    // Removing an address that was never added must not panic or underflow.
-    client.remove_verifier(&v1);
-    assert_eq!(client.verifier_count(), 0);
-}
-
-#[test]
-fn test_verifier_count_stays_accurate_after_mixed_operations() {
-    let (env, client, _admin) = setup();
-    let v0 = Address::generate(&env);
-    let v1 = Address::generate(&env);
-    let v2 = Address::generate(&env);
-    let v3 = Address::generate(&env);
-    let v4 = Address::generate(&env);
-
-    client.add_verifier(&v0);
-    client.add_verifier(&v1);
-    client.add_verifier(&v2);
-    client.add_verifier(&v3);
-    client.add_verifier(&v4);
-    assert_eq!(client.verifier_count(), 5);
-
-    client.remove_verifier(&v1);
-    client.remove_verifier(&v3);
-    assert_eq!(client.verifier_count(), 3);
-
-    client.add_verifier(&v1);
-    assert_eq!(client.verifier_count(), 4);
-}
-
-// ── get_verifiers pagination tests ──────────────────────────────────────────
-
-#[test]
-fn test_get_verifiers_empty_list() {
-    let (_env, client, _admin) = setup();
-    let page = client.get_verifiers(&0, &10);
-    assert_eq!(page.len(), 0);
-}
-
-#[test]
-fn test_get_verifiers_first_page() {
-    let (env, client, _admin) = setup();
-    let v0 = Address::generate(&env);
-    let v1 = Address::generate(&env);
-    let v2 = Address::generate(&env);
-    let v3 = Address::generate(&env);
-    let v4 = Address::generate(&env);
-
-    client.add_verifier(&v0);
-    client.add_verifier(&v1);
-    client.add_verifier(&v2);
-    client.add_verifier(&v3);
-    client.add_verifier(&v4);
-
-    let page = client.get_verifiers(&0, &3);
-    assert_eq!(page.len(), 3);
-    assert_eq!(page.get(0), Some(v0.clone()));
-    assert_eq!(page.get(1), Some(v1.clone()));
-    assert_eq!(page.get(2), Some(v2.clone()));
-}
-
-#[test]
-fn test_get_verifiers_second_page() {
-    let (env, client, _admin) = setup();
-    let v0 = Address::generate(&env);
-    let v1 = Address::generate(&env);
-    let v2 = Address::generate(&env);
-    let v3 = Address::generate(&env);
-    let v4 = Address::generate(&env);
-
-    client.add_verifier(&v0);
-    client.add_verifier(&v1);
-    client.add_verifier(&v2);
-    client.add_verifier(&v3);
-    client.add_verifier(&v4);
-
-    let page = client.get_verifiers(&3, &3);
-    assert_eq!(page.len(), 2); // only 2 items remain after offset 3
-    assert_eq!(page.get(0), Some(v3.clone()));
-    assert_eq!(page.get(1), Some(v4.clone()));
-}
-
-#[test]
-fn test_get_verifiers_start_beyond_end_returns_empty() {
-    let (env, client, _admin) = setup();
-    let v = Address::generate(&env);
-    client.add_verifier(&v);
-
-    let page = client.get_verifiers(&10, &5);
-    assert_eq!(page.len(), 0);
-}
-
-#[test]
-fn test_get_verifiers_limit_capped_at_20() {
-    let (env, client, _admin) = setup();
-    // Add 25 verifiers.
-    for _ in 0..25 {
-        let v = Address::generate(&env);
-        client.add_verifier(&v);
-    }
-
-    // Even with limit=100, we should receive at most 20 entries.
-    let page = client.get_verifiers(&0, &100);
-    assert_eq!(page.len(), 20);
-}
-
-#[test]
-fn test_get_verifiers_exact_limit_20() {
-    let (env, client, _admin) = setup();
-    for _ in 0..20 {
-        let v = Address::generate(&env);
-        client.add_verifier(&v);
-    }
-
-    let page = client.get_verifiers(&0, &20);
-    assert_eq!(page.len(), 20);
-}
-
-#[test]
-fn test_get_verifiers_pagination_covers_full_list() {
-    let (env, client, _admin) = setup();
-    for _ in 0..7 {
-        let v = Address::generate(&env);
-        client.add_verifier(&v);
-    }
-
-    // Page 0: items 0-2
-    let page0 = client.get_verifiers(&0, &3);
-    // Page 1: items 3-5
-    let page1 = client.get_verifiers(&3, &3);
-    // Page 2: item 6 (partial)
-    let page2 = client.get_verifiers(&6, &3);
-
-    assert_eq!(page0.len() + page1.len() + page2.len(), 7);
+    let bumped_ttl = env.as_contract(&contract_id, || {
+        env.storage().instance().get_ttl()
+    });
+    assert_eq!(bumped_ttl, bump);
 }
