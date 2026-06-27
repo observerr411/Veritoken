@@ -1,5 +1,4 @@
 import { Networks, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
-import type { ContractEvent } from "../types";
 
 export const NETWORK = (import.meta.env.VITE_STELLAR_NETWORK as string) ?? "testnet";
 
@@ -19,7 +18,6 @@ export const CONTRACT_IDS = {
   invoiceToken: import.meta.env.VITE_INVOICE_TOKEN_ID ?? "",
   propertyToken: import.meta.env.VITE_PROPERTY_TOKEN_ID ?? "",
   carbonToken: import.meta.env.VITE_CARBON_TOKEN_ID ?? "",
-  rwaToken: import.meta.env.VITE_RWA_TOKEN_ID ?? "",
 };
 
 // Error code tables matching each contract's #[contracterror] enum discriminants.
@@ -157,25 +155,4 @@ export async function simulateAndSend(
   }
 
   return getResult as rpc.Api.GetSuccessfulTransactionResponse;
-}
-
-/** Fetch recent contract events for a given contract ID. Returns an empty array when the RPC has no history. */
-export async function fetchContractEvents(contractId: string, limit: number): Promise<ContractEvent[]> {
-  try {
-    const ledger = await server.getLatestLedger();
-    const startLedger = Math.max(1, ledger.sequence - 17280); // ~1 day of ledgers
-    const result = await server.getEvents({
-      startLedger,
-      filters: [{ type: "contract", contractIds: [contractId] }],
-      limit,
-    });
-    return result.events.map((r) => ({
-      type: String(r.topic[0] ?? ""),
-      amount: String(r.value ?? ""),
-      counterparty: String(r.topic[1] ?? ""),
-      timestamp: new Date(r.ledgerClosedAt).toLocaleString(),
-    }));
-  } catch {
-    return [];
-  }
 }

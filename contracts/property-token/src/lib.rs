@@ -207,7 +207,6 @@ impl PropertyToken {
         from.require_auth();
         Self::require_kyc(&env, &from);
         Self::require_kyc(&env, &to);
-        Self::require_tier(&env, &to);
         Self::check_compliance(&env, &from, &to, shares);
         if shares <= 0 {
             panic_with_error!(env, PropertyError::NegativeShares);

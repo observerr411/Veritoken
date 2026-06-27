@@ -107,7 +107,3 @@ echo ""
 echo "Done! Contract IDs written to frontend/.env"
 echo "IMPORTANT: Update the placeholder --meta values above with real asset metadata before production deployment."
 echo "Next: cd frontend && npm install && npm run dev"
-echo ""
-# Optional: verify the deployment immediately after writing .env.
-# Uncomment the line below or run manually: bash scripts/verify-deployment.sh
-# bash "$(dirname "$0")/verify-deployment.sh" "$IDENTITY"

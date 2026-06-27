@@ -7,7 +7,6 @@ interface ImportMetaEnv {
   readonly VITE_INVOICE_TOKEN_ID?: string;
   readonly VITE_PROPERTY_TOKEN_ID?: string;
   readonly VITE_CARBON_TOKEN_ID?: string;
-  readonly VITE_RWA_TOKEN_ID?: string;
 }
 
 interface ImportMeta {
