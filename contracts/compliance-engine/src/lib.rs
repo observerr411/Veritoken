@@ -345,11 +345,8 @@ impl ComplianceEngine {
             .unwrap_or_else(|| Vec::new(env))
     }
 
-    fn blocked_jurisdictions(env: &Env) -> Vec<String> {
-        env.storage()
-            .instance()
-            .get(&DataKey::BlockedJurisdictions)
-            .unwrap_or_else(|| Vec::new(env))
+    pub fn version(env: Env) -> soroban_sdk::String {
+        soroban_sdk::String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
 }
 

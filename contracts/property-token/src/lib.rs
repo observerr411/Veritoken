@@ -46,6 +46,16 @@ pub enum DataKey {
     Allowance(AllowanceKey),
     HolderList,
     HolderCount,
+    DividendDeposit(u32),
+    DividendDepositCount,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct DividendEvent {
+    pub amount: i128,
+    pub timestamp: u64,
+    pub running_total_dps: i128,
 }
 
 #[contracttype]
@@ -417,7 +427,56 @@ impl PropertyToken {
         env.storage()
             .instance()
             .set(&DataKey::DividendPool, &(pool + amount));
+
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DividendDepositCount)
+            .unwrap_or(0);
+        let event = DividendEvent {
+            amount,
+            timestamp: env.ledger().timestamp(),
+            running_total_dps: new_dps,
+        };
+        let deposit_key = DataKey::DividendDeposit(count);
+        env.storage().persistent().set(&deposit_key, &event);
+        env.storage()
+            .persistent()
+            .extend_ttl(&deposit_key, THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .set(&DataKey::DividendDepositCount, &(count + 1));
+
         env.events().publish((symbol_short!("div_dep"),), amount);
+    }
+
+    pub fn dividend_deposit_count(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::DividendDepositCount)
+            .unwrap_or(0)
+    }
+
+    pub fn get_dividend_history(env: Env, start: u32, limit: u32) -> Vec<DividendEvent> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DividendDepositCount)
+            .unwrap_or(0);
+        let capped = limit.min(50);
+        let end = (start + capped).min(count);
+        let mut out = Vec::new(&env);
+        for i in start..end {
+            let event: DividendEvent = env
+                .storage()
+                .persistent()
+                .get(&DataKey::DividendDeposit(i))
+                .expect("dividend event not found");
+            out.push_back(event);
+        }
+        out
     }
 
     pub fn claim_dividend(env: Env, holder: Address) -> i128 {
@@ -482,12 +541,17 @@ impl PropertyToken {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::read_balance(&env, id)
     }
+
     pub fn total_shares(env: Env) -> i128 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
             .instance()
             .get(&DataKey::TotalShares)
             .unwrap_or(0)
+    }
+
+    pub fn version(env: Env) -> String {
+        String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
 
     // ── Internals ────────────────────────────────────────────────────────────

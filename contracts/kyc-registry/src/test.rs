@@ -254,3 +254,10 @@ fn test_approve_accepts_valid_iso_code() {
     client.approve(&verifier, &subject, &1, &0, &String::from_str(&env, "DE"));
     assert!(client.is_approved(&subject));
 }
+
+#[test]
+fn test_version_returns_nonempty() {
+    let (_, client, _) = setup();
+    let v = client.version();
+    assert!(v.len() > 0);
+}

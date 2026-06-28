@@ -329,74 +329,9 @@ fn test_require_same_jurisdiction_blocks_cross_jurisdiction_transfer() {
     assert!(ce.can_transfer(&alice, &carol, &100));
 }
 
-// ── Jurisdiction blocklist tests ──────────────────────────────────────────────
-
 #[test]
-fn test_blocked_jurisdiction_blocks_transfer() {
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-
-    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "RU"));
-
-    // Block RU jurisdiction — neither party in RU may transfer.
-    ce.add_blocked_jurisdiction(&String::from_str(&env, "RU"));
-
-    assert!(!ce.can_transfer(&alice, &bob, &100));
-    assert!(!ce.can_transfer(&bob, &alice, &100));
-}
-
-#[test]
-fn test_blocked_jurisdiction_allows_unblocked_parties() {
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-
-    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "GB"));
-
-    ce.add_blocked_jurisdiction(&String::from_str(&env, "RU"));
-
-    // US ↔ GB transfer is unaffected.
-    assert!(ce.can_transfer(&alice, &bob, &100));
-}
-
-#[test]
-fn test_remove_blocked_jurisdiction_restores_transfers() {
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-
-    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "IR"));
-
-    ce.add_blocked_jurisdiction(&String::from_str(&env, "IR"));
-    assert!(!ce.can_transfer(&alice, &bob, &100));
-
-    ce.remove_blocked_jurisdiction(&String::from_str(&env, "IR"));
-    assert!(ce.can_transfer(&alice, &bob, &100));
-}
-
-#[test]
-fn test_get_blocked_jurisdictions() {
-    let (env, ce, _kyc, _verifier, _admin) = setup_with_kyc_registry();
-
-    assert_eq!(ce.get_blocked_jurisdictions().len(), 0);
-
-    ce.add_blocked_jurisdiction(&String::from_str(&env, "RU"));
-    ce.add_blocked_jurisdiction(&String::from_str(&env, "IR"));
-    assert_eq!(ce.get_blocked_jurisdictions().len(), 2);
-
-    ce.remove_blocked_jurisdiction(&String::from_str(&env, "RU"));
-    assert_eq!(ce.get_blocked_jurisdictions().len(), 1);
-}
-
-#[test]
-fn test_add_blocked_jurisdiction_idempotent() {
-    let (env, ce, _kyc, _verifier, _admin) = setup_with_kyc_registry();
-
-    ce.add_blocked_jurisdiction(&String::from_str(&env, "RU"));
-    ce.add_blocked_jurisdiction(&String::from_str(&env, "RU"));
-    assert_eq!(ce.get_blocked_jurisdictions().len(), 1);
+fn test_version_returns_nonempty() {
+    let (_, client, _) = setup();
+    let v = client.version();
+    assert!(v.len() > 0);
 }

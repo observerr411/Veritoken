@@ -366,4 +366,8 @@ impl KycRegistry {
         }
         out
     }
+
+    pub fn version(env: Env) -> String {
+        String::from_str(&env, env!("CARGO_PKG_VERSION"))
+    }
 }

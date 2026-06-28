@@ -85,6 +85,12 @@ impl CarbonCreditToken {
         }
     }
 
+    fn validate_vintage_year(year: u32) {
+        if year < 1990 || year > 2050 {
+            panic!("invalid vintage year");
+        }
+    }
+
     /// Constructor — called atomically at deploy time via `stellar contract deploy -- --admin ...`.
     /// Eliminates the deploy→initialize front-running window.
     pub fn __constructor(
@@ -95,6 +101,7 @@ impl CarbonCreditToken {
         meta: ProjectMeta,
     ) {
         Self::validate_project_type(&env, &meta.project_type);
+        Self::validate_vintage_year(meta.vintage_year);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -169,6 +176,7 @@ impl CarbonCreditToken {
     pub fn update_meta(env: Env, new_meta: ProjectMeta) {
         Self::require_admin(&env);
         Self::validate_project_type(&env, &new_meta.project_type);
+        Self::validate_vintage_year(new_meta.vintage_year);
         let old_meta: ProjectMeta = env.storage().instance().get(&DataKey::ProjectMeta).unwrap();
         if new_meta.project_id != old_meta.project_id {
             panic!("project_id is immutable");
@@ -405,6 +413,10 @@ impl CarbonCreditToken {
             .instance()
             .get(&DataKey::TotalRetired)
             .unwrap_or(0)
+    }
+
+    pub fn version(env: Env) -> String {
+        String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
 
     // ── Internals ────────────────────────────────────────────────────────────

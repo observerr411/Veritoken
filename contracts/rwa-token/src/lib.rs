@@ -47,6 +47,20 @@ pub enum RwaError {
     AccountFrozen = 7,
 }
 
+pub const META_LEGAL_ENTITY: &str = "legal_ent";
+pub const META_GOVERNING_LAW: &str = "gov_law";
+pub const META_ISIN: &str = "isin";
+pub const META_PROSPECTUS_HASH: &str = "pros_hash";
+
+#[contracttype]
+#[derive(Clone)]
+pub struct ComplianceMetadata {
+    pub legal_entity: Option<String>,
+    pub governing_law: Option<String>,
+    pub isin: Option<String>,
+    pub prospectus_hash: Option<String>,
+}
+
 #[contract]
 pub struct RwaToken;
 
@@ -362,5 +376,9 @@ impl RwaToken {
             isin: read(META_ISIN),
             prospectus_hash: read(META_PROSPECTUS_HASH),
         }
+    }
+
+    pub fn version(env: Env) -> String {
+        String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
 }

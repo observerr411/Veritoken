@@ -492,3 +492,75 @@ fn test_multi_invoice_transfer_only_within_invoice() {
     assert_eq!(h.token.balance(&bob, &id1), 300);
     assert_eq!(h.token.balance(&bob, &id2), 0);
 }
+
+#[test]
+fn test_version_returns_nonempty() {
+    let h = setup();
+    let v = h.token.version();
+    assert!(v.len() > 0);
+}
+
+#[test]
+fn test_partial_settle_proportional_redemption() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+
+    // Issue 100 tokens against a 1,000,000,000,000-stroop face value
+    let face = 1_000_000_000_000i128;
+    let issued = 100i128;
+    h.token.issue(&holder, &issued);
+
+    // Partial settle for 60% of face value
+    let settlement = face * 60 / 100;
+    h.token.partial_settle(&settlement);
+
+    assert_eq!(h.token.settlement_amount(), settlement);
+    assert!(h.token.is_settled());
+
+    // Holder can redeem up to issued * settlement / face = 60 tokens
+    let max_redeemable = issued * settlement / face;
+    h.token.redeem(&holder, &max_redeemable);
+}
+
+#[test]
+fn test_partial_settle_blocks_over_proportional_redeem() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+
+    let face = 1_000_000_000_000i128;
+    h.token.issue(&holder, &100);
+    h.token.partial_settle(&(face * 50 / 100));
+
+    // Trying to redeem more than 50 (the proportional share) should fail
+    assert!(h.token.try_redeem(&holder, &51).is_err());
+}
+
+#[test]
+fn test_settle_sets_full_face_value() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+
+    h.token.issue(&holder, &100);
+    h.token.settle();
+
+    let face = 1_000_000_000_000i128;
+    assert_eq!(h.token.settlement_amount(), face);
+    // Full settlement: holder can redeem all tokens
+    h.token.redeem(&holder, &100);
+}
+
+#[test]
+fn test_partial_settle_rejects_zero() {
+    let h = setup();
+    assert!(h.token.try_partial_settle(&0).is_err());
+}
+
+#[test]
+fn test_partial_settle_rejects_excess() {
+    let h = setup();
+    let face = 1_000_000_000_000i128;
+    assert!(h.token.try_partial_settle(&(face + 1)).is_err());
+}

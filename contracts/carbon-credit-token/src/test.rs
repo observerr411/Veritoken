@@ -423,3 +423,46 @@ fn test_update_compliance_engine_affects_transfers() {
     h.token.update_compliance_engine(&ce2_id);
     assert!(h.token.try_transfer(&alice, &bob, &10).is_err());
 }
+
+#[test]
+fn test_version_returns_nonempty() {
+    let h = setup();
+    let v = h.token.version();
+    assert!(v.len() > 0);
+}
+
+#[test]
+fn test_vintage_year_boundaries_accepted() {
+    let h = setup();
+    let mut m = meta(&h.env);
+
+    m.vintage_year = 1990;
+    h.token.update_meta(&m);
+
+    m.vintage_year = 2050;
+    h.token.update_meta(&m);
+}
+
+#[test]
+fn test_vintage_year_below_min_rejected() {
+    let h = setup();
+    let mut m = meta(&h.env);
+    m.vintage_year = 1989;
+    assert!(h.token.try_update_meta(&m).is_err());
+}
+
+#[test]
+fn test_vintage_year_above_max_rejected() {
+    let h = setup();
+    let mut m = meta(&h.env);
+    m.vintage_year = 2051;
+    assert!(h.token.try_update_meta(&m).is_err());
+}
+
+#[test]
+fn test_vintage_year_zero_rejected() {
+    let h = setup();
+    let mut m = meta(&h.env);
+    m.vintage_year = 0;
+    assert!(h.token.try_update_meta(&m).is_err());
+}

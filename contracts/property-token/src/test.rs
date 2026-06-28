@@ -622,3 +622,72 @@ fn test_buyback_rejects_kyc_unapproved_holder() {
     assert!(h.token.try_buyback(&alice, &50).is_err());
 }
 
+#[test]
+fn test_version_returns_nonempty() {
+    let h = setup();
+    let v = h.token.version();
+    assert!(v.len() > 0);
+}
+
+#[test]
+fn test_dividend_history_records_deposits() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &500);
+
+    assert_eq!(h.token.dividend_deposit_count(), 0);
+
+    h.token.deposit_dividend(&1_000);
+    h.token.deposit_dividend(&2_000);
+
+    assert_eq!(h.token.dividend_deposit_count(), 2);
+
+    let history = h.token.get_dividend_history(&0, &10);
+    assert_eq!(history.len(), 2);
+
+    let first = history.get(0).unwrap();
+    assert_eq!(first.amount, 1_000);
+
+    let second = history.get(1).unwrap();
+    assert_eq!(second.amount, 2_000);
+}
+
+#[test]
+fn test_dividend_history_running_total_dps() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+
+    h.token.deposit_dividend(&1_000);
+    h.token.deposit_dividend(&2_000);
+
+    let history = h.token.get_dividend_history(&0, &10);
+    assert_eq!(history.get(0).unwrap().running_total_dps, 1);
+    assert_eq!(history.get(1).unwrap().running_total_dps, 3);
+}
+
+#[test]
+fn test_dividend_history_pagination() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+
+    for _ in 0..5 {
+        h.token.deposit_dividend(&100);
+    }
+
+    let page = h.token.get_dividend_history(&2, &2);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap().amount, 100);
+}
+
+#[test]
+fn test_dividend_history_empty_before_deposit() {
+    let h = setup();
+    let history = h.token.get_dividend_history(&0, &10);
+    assert_eq!(history.len(), 0);
+    assert_eq!(h.token.dividend_deposit_count(), 0);
+}
