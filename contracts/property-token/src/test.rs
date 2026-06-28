@@ -357,6 +357,90 @@ fn test_transfer_rejects_recipient_below_required_tier() {
     assert!(h.token.try_transfer(&alice, &bob, &50).is_err());
 }
 
+// ── transfer_from tier enforcement tests (#254) ───────────────────────────────
+
+#[test]
+fn test_transfer_from_rejects_recipient_below_required_tier() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    // alice has tier 1, bob has tier 0 (below kyc_tier_required=1)
+    h.approve_kyc_with_tier(&alice, 1);
+    h.approve_kyc_with_tier(&bob, 0);
+    h.approve_kyc_with_tier(&spender, 1);
+    h.token.mint(&alice, &100);
+    h.token.approve(&alice, &spender, &50, &(h.env.ledger().sequence() + 100));
+    assert!(h.token.try_transfer_from(&spender, &alice, &bob, &50).is_err());
+}
+
+#[test]
+fn test_transfer_from_accepts_recipient_with_sufficient_tier() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc_with_tier(&alice, 1);
+    h.approve_kyc_with_tier(&bob, 1);
+    h.approve_kyc_with_tier(&spender, 1);
+    h.token.mint(&alice, &100);
+    h.token.approve(&alice, &spender, &50, &(h.env.ledger().sequence() + 100));
+    h.token.transfer_from(&spender, &alice, &bob, &50);
+    assert_eq!(h.token.balance(&bob), 50);
+}
+
+// ── property_type validation tests (#256) ─────────────────────────────────────
+
+#[test]
+#[should_panic]
+fn test_invalid_property_type_panics_in_constructor() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let kyc_id = Address::generate(&env);
+    let ce_id = Address::generate(&env);
+    let mut bad_meta = meta(&env);
+    bad_meta.property_type = String::from_str(&env, "warehouse");
+    env.register(PropertyToken, (admin, kyc_id, ce_id, bad_meta));
+}
+
+#[test]
+fn test_valid_property_types_accepted_in_constructor() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    for pt in ["residential", "commercial", "land"] {
+        let kyc_id = env.register(KycRegistry, ());
+        let kyc = KycRegistryClient::new(&env, &kyc_id);
+        kyc.initialize(&admin);
+        let compliance_id = env.register(ComplianceEngine, ());
+        let compliance = ComplianceEngineClient::new(&env, &compliance_id);
+        compliance.initialize(&admin, &kyc_id);
+        let mut m = meta(&env);
+        m.property_type = String::from_str(&env, pt);
+        let token_id = env.register(PropertyToken, (admin.clone(), kyc_id, compliance_id, m));
+        let token = PropertyTokenClient::new(&env, &token_id);
+        assert_eq!(token.get_meta().property_type, String::from_str(&env, pt));
+    }
+}
+
+#[test]
+fn test_invalid_property_type_panics_in_update_meta() {
+    let h = setup();
+    let mut bad_meta = h.token.get_meta();
+    bad_meta.property_type = String::from_str(&h.env, "warehouse");
+    assert!(h.token.try_update_meta(&bad_meta).is_err());
+}
+
+#[test]
+fn test_valid_property_type_accepted_in_update_meta() {
+    let h = setup();
+    let mut new_meta = h.token.get_meta();
+    new_meta.property_type = String::from_str(&h.env, "commercial");
+    h.token.update_meta(&new_meta);
+    assert_eq!(h.token.get_meta().property_type, String::from_str(&h.env, "commercial"));
+}
+
 // ── update_kyc_registry / update_compliance_engine tests ─────────────────────
 
 #[test]

@@ -27,6 +27,22 @@ pub enum DataKey {
     KycStatus(Address),
     VerifierList,
     VerifierCount,
+    ExpiryIndex(u32),
+    ExpiryIndexCount,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct ExpiryEntry {
+    pub expiry: u64,
+    pub addr: Address,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct ExpiringRecord {
+    pub addr: Address,
+    pub record: KycRecord,
 }
 
 #[contracttype]
@@ -316,8 +332,38 @@ impl KycRegistry {
     }
 
     fn write_record(env: &Env, addr: Address, record: KycRecord) {
+        if record.status == KycStatus::Approved && record.expiry != 0 {
+            let idx: u32 = env.storage().instance().get(&DataKey::ExpiryIndexCount).unwrap_or(0);
+            let entry = ExpiryEntry { expiry: record.expiry, addr: addr.clone() };
+            let ik = DataKey::ExpiryIndex(idx);
+            env.storage().persistent().set(&ik, &entry);
+            env.storage().persistent().extend_ttl(&ik, THRESHOLD, BUMP);
+            env.storage().instance().set(&DataKey::ExpiryIndexCount, &(idx + 1));
+        }
         let key = DataKey::KycStatus(addr);
         env.storage().persistent().set(&key, &record);
         env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+    }
+
+    pub fn get_expiring_soon(env: Env, within_seconds: u64, start: u32, limit: u32) -> Vec<ExpiringRecord> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let count: u32 = env.storage().instance().get(&DataKey::ExpiryIndexCount).unwrap_or(0);
+        let now = env.ledger().timestamp();
+        let capped = limit.min(50);
+        let mut out: Vec<ExpiringRecord> = Vec::new(&env);
+        let mut i = start;
+        while i < count && out.len() < capped {
+            if let Some(entry) = env.storage().persistent().get::<DataKey, ExpiryEntry>(&DataKey::ExpiryIndex(i)) {
+                if entry.expiry > now && entry.expiry <= now + within_seconds {
+                    if let Some(record) = env.storage().persistent().get::<DataKey, KycRecord>(&DataKey::KycStatus(entry.addr.clone())) {
+                        if record.status == KycStatus::Approved {
+                            out.push_back(ExpiringRecord { addr: entry.addr, record });
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+        out
     }
 }

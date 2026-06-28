@@ -351,6 +351,58 @@ fn test_to_certificate_json() {
     assert!(s.contains("\"timestamp\":"));
 }
 
+// ── project_type validation tests (#255) ─────────────────────────────────────
+
+#[test]
+#[should_panic]
+fn test_invalid_project_type_panics_in_constructor() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let kyc_id = Address::generate(&env);
+    let ce_id = Address::generate(&env);
+    let mut bad_meta = meta(&env);
+    bad_meta.project_type = String::from_str(&env, "nuclear");
+    env.register(CarbonCreditToken, (admin, kyc_id, ce_id, bad_meta));
+}
+
+#[test]
+fn test_valid_project_types_accepted_in_constructor() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    for pt in ["forestry", "renewable", "methane_capture"] {
+        let kyc_id = env.register(KycRegistry, ());
+        let kyc = KycRegistryClient::new(&env, &kyc_id);
+        kyc.initialize(&admin);
+        let compliance_id = env.register(ComplianceEngine, ());
+        let compliance = ComplianceEngineClient::new(&env, &compliance_id);
+        compliance.initialize(&admin, &kyc_id);
+        let mut m = meta(&env);
+        m.project_type = String::from_str(&env, pt);
+        let token_id = env.register(CarbonCreditToken, (admin.clone(), kyc_id, compliance_id, m));
+        let token = CarbonCreditTokenClient::new(&env, &token_id);
+        assert_eq!(token.get_meta().project_type, String::from_str(&env, pt));
+    }
+}
+
+#[test]
+fn test_invalid_project_type_panics_in_update_meta() {
+    let h = setup();
+    let mut bad_meta = h.token.get_meta();
+    bad_meta.project_type = String::from_str(&h.env, "coal");
+    assert!(h.token.try_update_meta(&bad_meta).is_err());
+}
+
+#[test]
+fn test_valid_project_type_accepted_in_update_meta() {
+    let h = setup();
+    let mut new_meta = h.token.get_meta();
+    new_meta.project_type = String::from_str(&h.env, "renewable");
+    h.token.update_meta(&new_meta);
+    assert_eq!(h.token.get_meta().project_type, String::from_str(&h.env, "renewable"));
+}
+
 #[test]
 fn test_update_compliance_engine_affects_transfers() {
     let h = setup();

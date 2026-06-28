@@ -6,6 +6,7 @@ use soroban_sdk::{
     Address, Env, String,
 };
 
+
 fn setup() -> (Env, KycRegistryClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
