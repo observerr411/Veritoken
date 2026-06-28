@@ -103,3 +103,57 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-wasm-${{ matrix.crate }}-
       - name: Build WASM
         run: cargo build --release --target wasm32-unknown-unknown -p ${{ matrix.crate }}
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: build-wasm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-wasm-integration-
+      - name: Build all WASM binaries
+        run: |
+          for crate in compliance-engine kyc-registry rwa-token invoice-token property-token carbon-credit-token; do
+            cargo build --release --target wasm32-unknown-unknown -p $crate
+          done
+      - name: Start Stellar quickstart node
+        run: docker compose up -d
+      - name: Wait for Stellar node to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/soroban/rpc > /dev/null 2>&1; then
+              echo "Node is ready"
+              break
+            fi
+            echo "Waiting for node... ($i/30)"
+            sleep 2
+          done
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: tests/integration/package.json
+      - name: Install integration test dependencies
+        working-directory: tests/integration
+        run: npm install
+      - name: Run integration tests
+        working-directory: tests/integration
+        run: npm test
+        env:
+          STELLAR_RPC_URL: http://localhost:8000/soroban/rpc
+      - name: Stop Stellar quickstart node
+        if: always()
+        run: docker compose down

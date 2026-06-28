@@ -6,7 +6,7 @@ mod test;
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
-    Address, Env, Vec,
+    Address, Env, String, Vec,
 };
 
 #[contracterror]
@@ -26,6 +26,7 @@ pub enum DataKey {
     KycRegistry,
     Rules,
     Blocklist,
+    BlockedJurisdictions,
     MaxTransfer,
     MinHoldingPeriod,
     MaxHolders,
@@ -148,6 +149,44 @@ impl ComplianceEngine {
         Self::blocklist(&env).contains(&addr)
     }
 
+    // ── Jurisdiction blocklist ───────────────────────────────────────────────
+
+    pub fn add_blocked_jurisdiction(env: Env, jurisdiction: String) {
+        Self::require_admin(&env);
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let mut list = Self::blocked_jurisdictions(&env);
+        if !list.contains(&jurisdiction) {
+            list.push_back(jurisdiction.clone());
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::BlockedJurisdictions, &list);
+        env.events()
+            .publish((symbol_short!("jur_add"),), jurisdiction);
+    }
+
+    pub fn remove_blocked_jurisdiction(env: Env, jurisdiction: String) {
+        Self::require_admin(&env);
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let list = Self::blocked_jurisdictions(&env);
+        let mut new_list: Vec<String> = Vec::new(&env);
+        for j in list.iter() {
+            if j != jurisdiction {
+                new_list.push_back(j);
+            }
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::BlockedJurisdictions, &new_list);
+        env.events()
+            .publish((symbol_short!("jur_rem"),), jurisdiction);
+    }
+
+    pub fn get_blocked_jurisdictions(env: Env) -> Vec<String> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        Self::blocked_jurisdictions(&env)
+    }
+
     pub fn pause(env: Env) {
         Self::require_admin(&env);
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
@@ -181,6 +220,23 @@ impl ComplianceEngine {
         let blocklist = Self::blocklist(&env);
         if blocklist.contains(&from) || blocklist.contains(&to) {
             return false;
+        }
+
+        let blocked_jurisdictions = Self::blocked_jurisdictions(&env);
+        if !blocked_jurisdictions.is_empty() {
+            let kyc_registry: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::KycRegistry)
+                .unwrap();
+            let kyc = kyc_iface::KycRegistryClient::new(&env, &kyc_registry);
+            let from_record = kyc.get_record(&from);
+            let to_record = kyc.get_record(&to);
+            if blocked_jurisdictions.contains(&from_record.jurisdiction)
+                || blocked_jurisdictions.contains(&to_record.jurisdiction)
+            {
+                return false;
+            }
         }
 
         if rules.require_same_jurisdiction {

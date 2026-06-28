@@ -20,6 +20,20 @@ mod test;
 #[cfg(test)]
 mod sep41_compliance;
 
+pub const META_LEGAL_ENTITY: &str = "legal_entity";
+pub const META_GOVERNING_LAW: &str = "governing_law";
+pub const META_ISIN: &str = "isin";
+pub const META_PROSPECTUS_HASH: &str = "prosp_hash";
+
+#[contracttype]
+#[derive(Clone)]
+pub struct ComplianceMetadata {
+    pub legal_entity: Option<String>,
+    pub governing_law: Option<String>,
+    pub isin: Option<String>,
+    pub prospectus_hash: Option<String>,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -30,6 +44,7 @@ pub enum RwaError {
     InsufficientBalance = 4,
     AllowanceExpired = 5,
     InsufficientAllowance = 6,
+    AccountFrozen = 7,
 }
 
 pub const META_LEGAL_ENTITY: &str = "legal_ent";
@@ -65,10 +80,10 @@ impl RwaToken {
         compliance_engine: Address,
         compliance_metadata: Option<ComplianceMetadata>,
     ) {
-        // Validate asset_type
-        let valid_types = ["invoice", "property", "carbon_credit"];
-        let asset_type_str = asset_type.as_ref();
-        if !valid_types.contains(&asset_type_str) {
+        if asset_type != String::from_str(&env, "invoice")
+            && asset_type != String::from_str(&env, "property")
+            && asset_type != String::from_str(&env, "carbon_credit")
+        {
             panic!("invalid asset_type: must be 'invoice', 'property', or 'carbon_credit'");
         }
 
@@ -136,6 +151,29 @@ impl RwaToken {
             .publish((symbol_short!("upd_ce"),), new_engine);
     }
 
+    // ── Freeze / Unfreeze ────────────────────────────────────────────────────
+
+    /// Freeze an individual address, blocking it from sending or receiving tokens.
+    pub fn freeze(env: Env, addr: Address) {
+        let admin = admin::read_admin(&env);
+        admin.require_auth();
+        compliance::set_frozen(&env, &addr, true);
+        env.events().publish((symbol_short!("frozen"),), addr);
+    }
+
+    /// Unfreeze a previously frozen address, restoring transfer access.
+    pub fn unfreeze(env: Env, addr: Address) {
+        let admin = admin::read_admin(&env);
+        admin.require_auth();
+        compliance::set_frozen(&env, &addr, false);
+        env.events().publish((symbol_short!("unfrozen"),), addr);
+    }
+
+    /// Returns true if the given address is currently frozen.
+    pub fn is_frozen(env: Env, addr: Address) -> bool {
+        compliance::is_frozen(&env, &addr)
+    }
+
     // ── SEP-41 Token Interface ───────────────────────────────────────────────
 
     pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
@@ -172,6 +210,9 @@ impl RwaToken {
         if amount <= 0 {
             panic!("amount must be positive");
         }
+        if compliance::is_frozen(&env, &from) || compliance::is_frozen(&env, &to) {
+            panic_with_error!(env, RwaError::AccountFrozen);
+        }
         kyc::require_kyc(&env, &from);
         kyc::require_kyc(&env, &to);
         compliance::check_transfer(&env, &from, &to, amount);
@@ -195,6 +236,9 @@ impl RwaToken {
         spender.require_auth();
         if amount <= 0 {
             panic!("amount must be positive");
+        }
+        if compliance::is_frozen(&env, &from) || compliance::is_frozen(&env, &to) {
+            panic_with_error!(env, RwaError::AccountFrozen);
         }
         kyc::require_kyc(&env, &from);
         kyc::require_kyc(&env, &to);
@@ -221,6 +265,9 @@ impl RwaToken {
         if amount <= 0 {
             panic!("amount must be positive");
         }
+        if compliance::is_frozen(&env, &from) {
+            panic_with_error!(env, RwaError::AccountFrozen);
+        }
         kyc::require_kyc(&env, &from);
         let from_balance_before = balance::read_balance(&env, from.clone());
         balance::spend_balance(&env, from.clone(), amount);
@@ -236,6 +283,9 @@ impl RwaToken {
         spender.require_auth();
         if amount <= 0 {
             panic!("amount must be positive");
+        }
+        if compliance::is_frozen(&env, &from) {
+            panic_with_error!(env, RwaError::AccountFrozen);
         }
         kyc::require_kyc(&env, &from);
         let from_balance_before = balance::read_balance(&env, from.clone());

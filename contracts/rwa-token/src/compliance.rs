@@ -2,7 +2,10 @@
 
 use soroban_sdk::{Address, Env, String, Symbol};
 
-use crate::storage_types::{DataKey, INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD};
+use crate::storage_types::{
+    DataKey, BALANCE_BUMP_AMOUNT, BALANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT,
+    INSTANCE_LIFETIME_THRESHOLD,
+};
 use crate::RwaError;
 
 pub fn read_compliance_engine(env: &Env) -> Address {
@@ -50,6 +53,19 @@ pub fn register_holder(env: &Env, addr: &Address) {
     let engine = read_compliance_engine(env);
     let client = ComplianceEngineClient::new(env, &engine);
     client.register_holder(addr);
+}
+
+pub fn is_frozen(env: &Env, addr: &Address) -> bool {
+    let key = DataKey::Frozen(addr.clone());
+    env.storage().persistent().get(&key).unwrap_or(false)
+}
+
+pub fn set_frozen(env: &Env, addr: &Address, frozen: bool) {
+    let key = DataKey::Frozen(addr.clone());
+    env.storage().persistent().set(&key, &frozen);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
 }
 
 pub fn unregister_holder(env: &Env, addr: &Address) {

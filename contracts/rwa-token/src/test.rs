@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::{ComplianceMetadata, RwaToken, RwaTokenClient, META_ISIN, META_LEGAL_ENTITY};
+use crate::{ComplianceMetadata, RwaToken, RwaTokenClient, RwaError, META_ISIN, META_LEGAL_ENTITY};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{testutils::Address as _, Address, Env, IntoVal, String};
@@ -412,6 +412,7 @@ fn test_invalid_asset_type() {
             String::from_str(&env, "banana"),
             kyc_id,
             compliance_id,
+            Option::<ComplianceMetadata>::None,
         ),
     );
 }

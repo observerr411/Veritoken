@@ -20,6 +20,7 @@ pub enum DataKey {
     Balance(Address),
     Allowance(AllowanceKey),
     ComplianceMeta(Symbol),
+    Frozen(Address),
 }
 
 #[contracttype]

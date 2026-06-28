@@ -1,9 +1,9 @@
 #![cfg(test)]
 
-use crate::{RwaToken, RwaTokenClient};
+use crate::{ComplianceMetadata, RwaToken, RwaTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String};
 
 /// Test harness for SEP-41 compliance tests
 #[allow(dead_code)]
@@ -31,7 +31,7 @@ fn setup_sep41() -> Sep41Harness {
     // Compliance engine
     let compliance_id = env.register(ComplianceEngine, ());
     let compliance = ComplianceEngineClient::new(&env, &compliance_id);
-    compliance.initialize(&admin);
+    compliance.initialize(&admin, &kyc_id);
 
     // RWA token
     let token_id = env.register(
@@ -44,6 +44,7 @@ fn setup_sep41() -> Sep41Harness {
             String::from_str(&env, "property"),
             kyc_id.clone(),
             compliance_id.clone(),
+            Option::<ComplianceMetadata>::None,
         ),
     );
     let token = RwaTokenClient::new(&env, &token_id);
@@ -281,7 +282,7 @@ fn sep41_transfer_from_with_expired_allowance() {
     h.token.approve(&alice, &spender, &400, &expiration);
 
     // Advance ledger past expiration
-    h.env.ledger().with_sequence(expiration + 1);
+    h.env.ledger().set_sequence_number(expiration + 1);
 
     let res = h.token.try_transfer_from(&spender, &alice, &bob, &100);
     assert!(res.is_err());
@@ -368,7 +369,7 @@ fn sep41_allowance_expired() {
     h.token.approve(&alice, &spender, &500, &expiration);
     assert_eq!(h.token.allowance(&alice, &spender), 500);
 
-    h.env.ledger().with_sequence(expiration + 1);
+    h.env.ledger().set_sequence_number(expiration + 1);
     assert_eq!(h.token.allowance(&alice, &spender), 0);
 }
 

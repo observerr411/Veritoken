@@ -3,16 +3,16 @@
 
 //! Invoice Token — tokenizes accounts-receivable invoices.
 //! Each token unit represents 1 USD (7-decimal precision) of invoice face value.
-//! Adds invoice-specific metadata: issuer, debtor, due date, face value, discount rate.
-//! After settlement, redemption remains subject to compliance enforcement: a
-//! paused engine or blocklisted holder cannot redeem invoice tokens.
+//! Supports multiple invoices within a single deployed contract, each indexed
+//! by its invoice_id. Supply, settlement status, and balances are tracked
+//! independently per invoice.
 
 #[cfg(test)]
 mod test;
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
-    Address, Env, String,
+    Address, Env, String, Vec,
 };
 
 #[contracterror]
@@ -31,6 +31,8 @@ pub enum InvoiceError {
     Blocklisted = 10,
     TransferBlocked = 11,
     PastDueDate = 12,
+    InvoiceNotFound = 13,
+    InvoiceAlreadyExists = 14,
 }
 
 #[contracttype]
@@ -64,9 +66,9 @@ pub struct InvoiceMeta {
     pub discount_rate_bps: u32, // basis points
     pub due_date: u64,          // Unix timestamp
     pub currency: String,
-    pub ipfs_doc_hash: String,      // off-chain document anchor
-    pub transfer_fee_bps: u32,      // platform fee in basis points; 0 = no fee
-    pub fee_recipient: Option<Address>, // receives transfer_fee_bps cut on each transfer
+    pub ipfs_doc_hash: String,
+    pub transfer_fee_bps: u32,
+    pub fee_recipient: Option<Address>,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -78,9 +80,8 @@ pub struct InvoiceToken;
 
 #[contractimpl]
 impl InvoiceToken {
-    /// Constructor — called atomically at deploy time via `stellar contract deploy -- --admin ...`.
-    /// This eliminates the deploy→initialize front-running window.
-    #[allow(clippy::too_many_arguments)]
+    /// Constructor — sets admin/kyc/compliance and creates the first invoice
+    /// atomically at deploy time.
     pub fn __constructor(
         env: Env,
         admin: Address,
@@ -95,13 +96,10 @@ impl InvoiceToken {
         env.storage()
             .instance()
             .set(&DataKey::ComplianceEngine, &compliance_engine);
-        env.storage().instance().set(&DataKey::InvoiceMeta, &meta);
-        env.storage().instance().set(&DataKey::TotalSupply, &0i128);
-        env.storage().instance().set(&DataKey::Settled, &false);
+        Self::do_create_invoice(&env, meta);
     }
 
-    /// Legacy entry point — always panics. Retained so that any attempt to call
-    /// `initialize` post-deploy fails loudly rather than silently succeeding.
+    /// Legacy entry point — always panics.
     #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
@@ -137,38 +135,82 @@ impl InvoiceToken {
 
     pub fn propose_admin(env: Env, new_admin: Address) {
         Self::require_admin(&env);
-        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
         env.events().publish((symbol_short!("proposed"),), new_admin);
     }
 
     pub fn accept_admin(env: Env) {
-        let pending: Address = env.storage().instance().get(&DataKey::PendingAdmin).expect("no pending admin");
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .expect("no pending admin");
         pending.require_auth();
         let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         env.storage().instance().set(&DataKey::Admin, &pending);
         env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.events().publish((symbol_short!("admin_set"),), (old_admin, pending));
+        env.events()
+            .publish((symbol_short!("admin_set"),), (old_admin, pending));
+    }
+
+    // ── Invoice management ────────────────────────────────────────────────────
+
+    /// Create a new invoice within this contract. Admin-only.
+    pub fn create_invoice(env: Env, meta: InvoiceMeta) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        Self::require_admin(&env);
+        Self::do_create_invoice(&env, meta);
+    }
+
+    /// List invoice IDs with pagination. Returns up to `limit` (capped at 50)
+    /// IDs starting from `start` (zero-based offset).
+    pub fn list_invoices(env: Env, start: u32, limit: u32) -> Vec<String> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let list: Vec<String> = env
+            .storage()
+            .instance()
+            .get(&DataKey::InvoicesList)
+            .unwrap_or_else(|| Vec::new(&env));
+        let total = list.len();
+        let cap: u32 = 50;
+        let effective_limit = if limit > cap { cap } else { limit };
+        let mut result: Vec<String> = Vec::new(&env);
+        if start >= total {
+            return result;
+        }
+        let end = (start + effective_limit).min(total);
+        for i in start..end {
+            result.push_back(list.get(i).unwrap());
+        }
+        result
     }
 
     // ── Metadata ─────────────────────────────────────────────────────────────
 
-    pub fn get_meta(env: Env) -> InvoiceMeta {
+    pub fn get_meta(env: Env, invoice_id: String) -> InvoiceMeta {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        env.storage().instance().get(&DataKey::InvoiceMeta).unwrap()
+        env.storage()
+            .persistent()
+            .get(&DataKey::InvoiceMeta(invoice_id))
+            .expect("invoice not found")
     }
 
-    /// Replace the stored invoice metadata. Admin-only; panics if already settled.
-    pub fn update_meta(env: Env, new_meta: InvoiceMeta) {
+    /// Replace stored invoice metadata. Admin-only; panics if already settled.
+    pub fn update_meta(env: Env, invoice_id: String, new_meta: InvoiceMeta) {
         Self::require_admin(&env);
         if env
             .storage()
-            .instance()
-            .get::<DataKey, bool>(&DataKey::Settled)
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Settled(invoice_id.clone()))
             .unwrap_or(false)
         {
             panic!("invoice already settled");
         }
-        env.storage().instance().set(&DataKey::InvoiceMeta, &new_meta);
+        env.storage()
+            .persistent()
+            .set(&DataKey::InvoiceMeta(invoice_id), &new_meta);
         env.events().publish((symbol_short!("upd_meta"),), ());
     }
 
@@ -187,37 +229,45 @@ impl InvoiceToken {
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
-    /// Mint tokens to represent this invoice. Admin-only.
-    pub fn issue(env: Env, to: Address, amount: i128) {
+    /// Mint tokens for a specific invoice. Admin-only.
+    pub fn issue(env: Env, invoice_id: String, to: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
         Self::require_kyc(&env, &to);
         if env
             .storage()
-            .instance()
-            .get::<DataKey, bool>(&DataKey::Settled)
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Settled(invoice_id.clone()))
             .unwrap_or(false)
         {
             panic_with_error!(env, InvoiceError::AlreadySettled);
         }
-        let bal = Self::read_balance(&env, to.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(to.clone()), &(bal + amount));
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Balance(to.clone()), THRESHOLD, BUMP);
+        let bal = Self::read_balance(&env, to.clone(), invoice_id.clone());
+        env.storage().persistent().set(
+            &DataKey::Balance(to.clone(), invoice_id.clone()),
+            &(bal + amount),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Balance(to.clone(), invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
         Self::register_holder(&env, &to);
         let supply: i128 = env
             .storage()
-            .instance()
-            .get(&DataKey::TotalSupply)
+            .persistent()
+            .get(&DataKey::TotalSupply(invoice_id.clone()))
             .unwrap_or(0);
         env.storage()
-            .instance()
-            .set(&DataKey::TotalSupply, &(supply + amount));
-
-        env.events().publish((symbol_short!("issued"), to), amount);
+            .persistent()
+            .set(&DataKey::TotalSupply(invoice_id.clone()), &(supply + amount));
+        env.storage().persistent().extend_ttl(
+            &DataKey::TotalSupply(invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
+        env.events()
+            .publish((symbol_short!("issued"), to), (invoice_id, amount));
     }
 
     /// Mark invoice as fully settled; equivalent to partial_settle(face_value_usd).
@@ -268,14 +318,14 @@ impl InvoiceToken {
         from.require_auth();
         if !env
             .storage()
-            .instance()
-            .get::<DataKey, bool>(&DataKey::Settled)
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Settled(invoice_id.clone()))
             .unwrap_or(false)
         {
             panic_with_error!(env, InvoiceError::NotSettled);
         }
         Self::check_redeem_compliance(&env, &from, amount);
-        let bal = Self::read_balance(&env, from.clone());
+        let bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if bal < amount {
             panic_with_error!(env, InvoiceError::InsufficientBalance);
         }
@@ -302,50 +352,58 @@ impl InvoiceToken {
             .set(&DataKey::Balance(from.clone()), &(bal - amount));
         let supply: i128 = env
             .storage()
-            .instance()
-            .get(&DataKey::TotalSupply)
+            .persistent()
+            .get(&DataKey::TotalSupply(invoice_id.clone()))
             .unwrap_or(0);
         env.storage()
-            .instance()
-            .set(&DataKey::TotalSupply, &(supply - amount));
+            .persistent()
+            .set(&DataKey::TotalSupply(invoice_id.clone()), &(supply - amount));
+        env.storage().persistent().extend_ttl(
+            &DataKey::TotalSupply(invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
         env.events()
-            .publish((symbol_short!("redeemed"), from), amount);
+            .publish((symbol_short!("redeemed"), from), (invoice_id, amount));
     }
 
-    /// SEP-41 burn — destroys `amount` tokens from `from`.
-    /// Requires KYC for the holder and compliance checks (pause / blocklist).
-    pub fn burn(env: Env, from: Address, amount: i128) {
+    /// SEP-41-style burn — destroys tokens from `from` for a specific invoice.
+    pub fn burn(env: Env, invoice_id: String, from: Address, amount: i128) {
         from.require_auth();
         Self::require_kyc(&env, &from);
         Self::check_redeem_compliance(&env, &from, amount);
-        let bal = Self::read_balance(&env, from.clone());
+        let bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if bal < amount {
             panic!("insufficient balance");
         }
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(from.clone()), &(bal - amount));
+        env.storage().persistent().set(
+            &DataKey::Balance(from.clone(), invoice_id.clone()),
+            &(bal - amount),
+        );
         let supply: i128 = env
             .storage()
-            .instance()
-            .get(&DataKey::TotalSupply)
+            .persistent()
+            .get(&DataKey::TotalSupply(invoice_id.clone()))
             .unwrap_or(0);
         env.storage()
-            .instance()
-            .set(&DataKey::TotalSupply, &(supply - amount));
-        env.events().publish((symbol_short!("burn"), from), amount);
+            .persistent()
+            .set(&DataKey::TotalSupply(invoice_id.clone()), &(supply - amount));
+        env.storage().persistent().extend_ttl(
+            &DataKey::TotalSupply(invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
+        env.events()
+            .publish((symbol_short!("burn"), from), (invoice_id, amount));
     }
 
-    /// SEP-41 burn_from — destroys `amount` tokens from `from` on behalf of `spender`.
-    /// Requires KYC for the holder, compliance checks (pause / blocklist), and
-    /// consumes the spender's allowance.
-    pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
+    /// SEP-41-style burn_from — destroys tokens from `from` on behalf of `spender`.
+    pub fn burn_from(env: Env, spender: Address, invoice_id: String, from: Address, amount: i128) {
         spender.require_auth();
         Self::require_kyc(&env, &from);
         Self::check_redeem_compliance(&env, &from, amount);
 
-        // Spend allowance
-        let allowance = Self::read_allowance(&env, from.clone(), spender.clone());
+        let allowance = Self::read_allowance(&env, from.clone(), spender.clone(), invoice_id.clone());
         if allowance.amount < amount {
             panic!("insufficient allowance");
         }
@@ -356,45 +414,57 @@ impl InvoiceToken {
             amount: allowance.amount - amount,
             expiration_ledger: allowance.expiration_ledger,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Allowance(from.clone(), spender.clone()), &new_allowance);
+        env.storage().persistent().set(
+            &DataKey::Allowance(from.clone(), spender.clone(), invoice_id.clone()),
+            &new_allowance,
+        );
 
-        let bal = Self::read_balance(&env, from.clone());
+        let bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if bal < amount {
             panic!("insufficient balance");
         }
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(from.clone()), &(bal - amount));
+        env.storage().persistent().set(
+            &DataKey::Balance(from.clone(), invoice_id.clone()),
+            &(bal - amount),
+        );
         let supply: i128 = env
             .storage()
-            .instance()
-            .get(&DataKey::TotalSupply)
+            .persistent()
+            .get(&DataKey::TotalSupply(invoice_id.clone()))
             .unwrap_or(0);
         env.storage()
-            .instance()
-            .set(&DataKey::TotalSupply, &(supply - amount));
-        env.events().publish((symbol_short!("burn"), from), amount);
+            .persistent()
+            .set(&DataKey::TotalSupply(invoice_id.clone()), &(supply - amount));
+        env.storage().persistent().extend_ttl(
+            &DataKey::TotalSupply(invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
+        env.events()
+            .publish((symbol_short!("burn"), from), (invoice_id, amount));
     }
 
-    pub fn balance(env: Env, id: Address) -> i128 {
+    pub fn balance(env: Env, id: Address, invoice_id: String) -> i128 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::read_balance(&env, id)
+        Self::read_balance(&env, id, invoice_id)
     }
 
-    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+    pub fn transfer(env: Env, invoice_id: String, from: Address, to: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
         if env
             .storage()
-            .instance()
-            .get::<DataKey, bool>(&DataKey::Settled)
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Settled(invoice_id.clone()))
             .unwrap_or(false)
         {
             panic!("invoice already settled");
         }
-        let meta: InvoiceMeta = env.storage().instance().get(&DataKey::InvoiceMeta).unwrap();
+        let meta: InvoiceMeta = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InvoiceMeta(invoice_id.clone()))
+            .expect("invoice not found");
         if env.ledger().timestamp() > meta.due_date {
             panic_with_error!(env, InvoiceError::PastDueDate);
         }
@@ -405,34 +475,40 @@ impl InvoiceToken {
         Self::require_kyc(&env, &to);
         Self::require_compliance(&env, &from, &to, amount);
 
-        let from_bal = Self::read_balance(&env, from.clone());
+        let from_bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if from_bal < amount {
             panic_with_error!(env, InvoiceError::InsufficientBalance);
         }
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(from.clone()), &(from_bal - amount));
+        env.storage().persistent().set(
+            &DataKey::Balance(from.clone(), invoice_id.clone()),
+            &(from_bal - amount),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Balance(from.clone(), invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
 
-        let to_bal = Self::read_balance(&env, to.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(to.clone()), &(to_bal + amount));
-
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Balance(from.clone()), THRESHOLD, BUMP);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Balance(to.clone()), THRESHOLD, BUMP);
+        let to_bal = Self::read_balance(&env, to.clone(), invoice_id.clone());
+        env.storage().persistent().set(
+            &DataKey::Balance(to.clone(), invoice_id.clone()),
+            &(to_bal + amount),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Balance(to.clone(), invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
 
         Self::register_holder(&env, &to);
         env.events()
-            .publish((symbol_short!("transfer"), from, to), amount);
+            .publish((symbol_short!("transfer"), from, to), (invoice_id, amount));
     }
 
     pub fn transfer_from(
         env: Env,
         spender: Address,
+        invoice_id: String,
         from: Address,
         to: Address,
         amount: i128,
@@ -440,13 +516,17 @@ impl InvoiceToken {
         spender.require_auth();
         if env
             .storage()
-            .instance()
-            .get::<DataKey, bool>(&DataKey::Settled)
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Settled(invoice_id.clone()))
             .unwrap_or(false)
         {
             panic!("invoice already settled");
         }
-        let meta: InvoiceMeta = env.storage().instance().get(&DataKey::InvoiceMeta).unwrap();
+        let meta: InvoiceMeta = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InvoiceMeta(invoice_id.clone()))
+            .expect("invoice not found");
         if env.ledger().timestamp() > meta.due_date {
             panic_with_error!(env, InvoiceError::PastDueDate);
         }
@@ -457,49 +537,58 @@ impl InvoiceToken {
         Self::require_kyc(&env, &to);
         Self::require_compliance(&env, &from, &to, amount);
 
-        let allowance = Self::read_allowance(&env, from.clone(), spender.clone());
+        let allowance =
+            Self::read_allowance(&env, from.clone(), spender.clone(), invoice_id.clone());
         if allowance.expiration_ledger < env.ledger().sequence() {
             panic_with_error!(env, InvoiceError::AllowanceExpired);
         }
-
+        if allowance.amount < amount {
+            panic_with_error!(env, InvoiceError::InsufficientAllowance);
+        }
         let new_allowance = AllowanceValue {
             amount: allowance.amount - amount,
             expiration_ledger: allowance.expiration_ledger,
         };
         env.storage().persistent().set(
-            &DataKey::Allowance(from.clone(), spender.clone()),
+            &DataKey::Allowance(from.clone(), spender.clone(), invoice_id.clone()),
             &new_allowance,
         );
 
-        let from_bal = Self::read_balance(&env, from.clone());
+        let from_bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if from_bal < amount {
             panic_with_error!(env, InvoiceError::InsufficientBalance);
         }
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(from.clone()), &(from_bal - amount));
+        env.storage().persistent().set(
+            &DataKey::Balance(from.clone(), invoice_id.clone()),
+            &(from_bal - amount),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Balance(from.clone(), invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
 
-        let to_bal = Self::read_balance(&env, to.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(to.clone()), &(to_bal + amount));
-
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Balance(from.clone()), THRESHOLD, BUMP);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Balance(to.clone()), THRESHOLD, BUMP);
+        let to_bal = Self::read_balance(&env, to.clone(), invoice_id.clone());
+        env.storage().persistent().set(
+            &DataKey::Balance(to.clone(), invoice_id.clone()),
+            &(to_bal + amount),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Balance(to.clone(), invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
 
         Self::register_holder(&env, &to);
         env.events()
-            .publish((symbol_short!("transfer"), from, to), amount);
+            .publish((symbol_short!("transfer"), from, to), (invoice_id, amount));
     }
 
     pub fn approve(
         env: Env,
         from: Address,
         spender: Address,
+        invoice_id: String,
         amount: i128,
         expiration_ledger: u32,
     ) {
@@ -512,23 +601,23 @@ impl InvoiceToken {
             expiration_ledger,
         };
         env.storage().persistent().set(
-            &DataKey::Allowance(from.clone(), spender.clone()),
+            &DataKey::Allowance(from.clone(), spender.clone(), invoice_id.clone()),
             &allowance,
         );
         env.storage().persistent().extend_ttl(
-            &DataKey::Allowance(from.clone(), spender.clone()),
+            &DataKey::Allowance(from.clone(), spender.clone(), invoice_id.clone()),
             THRESHOLD,
             BUMP,
         );
         env.events().publish(
             (symbol_short!("approve"), from, spender),
-            (amount, expiration_ledger),
+            (invoice_id, amount, expiration_ledger),
         );
     }
 
-    pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
+    pub fn allowance(env: Env, from: Address, spender: Address, invoice_id: String) -> i128 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        let allowance = Self::read_allowance(&env, from, spender);
+        let allowance = Self::read_allowance(&env, from, spender, invoice_id);
         if allowance.expiration_ledger < env.ledger().sequence() {
             0
         } else {
@@ -536,19 +625,19 @@ impl InvoiceToken {
         }
     }
 
-    pub fn total_supply(env: Env) -> i128 {
+    pub fn total_supply(env: Env, invoice_id: String) -> i128 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
-            .instance()
-            .get(&DataKey::TotalSupply)
+            .persistent()
+            .get(&DataKey::TotalSupply(invoice_id))
             .unwrap_or(0)
     }
 
-    pub fn is_settled(env: Env) -> bool {
+    pub fn is_settled(env: Env, invoice_id: String) -> bool {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
-            .instance()
-            .get(&DataKey::Settled)
+            .persistent()
+            .get(&DataKey::Settled(invoice_id))
             .unwrap_or(false)
     }
 
@@ -557,6 +646,44 @@ impl InvoiceToken {
     }
 
     // ── Internals ────────────────────────────────────────────────────────────
+
+    fn do_create_invoice(env: &Env, meta: InvoiceMeta) {
+        let invoice_id = meta.invoice_id.clone();
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::InvoiceMeta(invoice_id.clone()))
+        {
+            panic_with_error!(env, InvoiceError::InvoiceAlreadyExists);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::InvoiceMeta(invoice_id.clone()), &meta);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::InvoiceMeta(invoice_id.clone()), THRESHOLD, BUMP);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TotalSupply(invoice_id.clone()), &0i128);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::TotalSupply(invoice_id.clone()), THRESHOLD, BUMP);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Settled(invoice_id.clone()), &false);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Settled(invoice_id.clone()), THRESHOLD, BUMP);
+        let mut list: Vec<String> = env
+            .storage()
+            .instance()
+            .get(&DataKey::InvoicesList)
+            .unwrap_or_else(|| Vec::new(env));
+        list.push_back(invoice_id.clone());
+        env.storage().instance().set(&DataKey::InvoicesList, &list);
+        env.events()
+            .publish((symbol_short!("inv_crt"),), invoice_id);
+    }
 
     fn require_admin(env: &Env) {
         let admin: Address = env
@@ -613,23 +740,27 @@ impl InvoiceToken {
         client.register_holder(addr);
     }
 
-    fn read_balance(env: &Env, addr: Address) -> i128 {
+    fn read_balance(env: &Env, addr: Address, invoice_id: String) -> i128 {
         env.storage()
             .persistent()
-            .get(&DataKey::Balance(addr))
+            .get(&DataKey::Balance(addr, invoice_id))
             .unwrap_or(0)
     }
 
-    fn read_allowance(env: &Env, from: Address, spender: Address) -> AllowanceValue {
+    fn read_allowance(
+        env: &Env,
+        from: Address,
+        spender: Address,
+        invoice_id: String,
+    ) -> AllowanceValue {
         env.storage()
             .persistent()
-            .get(&DataKey::Allowance(from, spender))
+            .get(&DataKey::Allowance(from, spender, invoice_id))
             .unwrap_or(AllowanceValue {
                 amount: 0,
                 expiration_ledger: 0,
             })
     }
-
 }
 
 mod kyc_iface {

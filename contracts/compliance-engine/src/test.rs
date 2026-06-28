@@ -4,7 +4,7 @@ use crate::{ComplianceEngine, ComplianceEngineClient, ComplianceError, Complianc
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Address, Env, String,
+    Address, Env, Error, String,
 };
 
 fn setup() -> (Env, ComplianceEngineClient<'static>, Address) {
@@ -151,7 +151,7 @@ fn test_set_rules_rejects_min_holding_period_exceeding_365_days() {
     let res = client.try_set_rules(&rules(0, 31_536_001, 0, false));
     assert_eq!(
         res,
-        Err(Ok(ComplianceError::MinHoldingPeriodExceeds365Days))
+        Err(Ok(Error::from(ComplianceError::MinHoldingPeriodExceeds365Days)))
     );
 }
 
@@ -159,7 +159,7 @@ fn test_set_rules_rejects_min_holding_period_exceeding_365_days() {
 fn test_set_rules_rejects_negative_max_transfer_amount() {
     let (_env, client, _admin) = setup();
     let res = client.try_set_rules(&rules(-1, 0, 0, false));
-    assert_eq!(res, Err(Ok(ComplianceError::NegativeMaxTransferAmount)));
+    assert_eq!(res, Err(Ok(Error::from(ComplianceError::NegativeMaxTransferAmount))));
 }
 
 #[test]
@@ -172,7 +172,7 @@ fn test_set_rules_rejects_max_holders_below_current_holder_count() {
     assert_eq!(client.holder_count(), 2);
 
     let res = client.try_set_rules(&rules(0, 0, 1, false));
-    assert_eq!(res, Err(Ok(ComplianceError::MaxHoldersBelowCurrentCount)));
+    assert_eq!(res, Err(Ok(Error::from(ComplianceError::MaxHoldersBelowCurrentCount))));
 }
 
 #[test]

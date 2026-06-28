@@ -3,7 +3,7 @@
 use crate::{KycError, KycRegistry, KycRegistryClient};
 use soroban_sdk::{
     testutils::{storage::Instance, Address as _, Ledger},
-    Address, Env, String,
+    Address, Env, Error, String,
 };
 
 
@@ -212,7 +212,7 @@ fn test_approve_rejects_jurisdiction_too_long() {
     let subject = Address::generate(&env);
     client.add_verifier(&verifier);
     let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "USA"));
-    assert_eq!(res, Err(Ok(KycError::InvalidJurisdiction)));
+    assert_eq!(res, Err(Ok(Error::from(KycError::InvalidJurisdiction))));
 }
 
 #[test]
@@ -222,7 +222,7 @@ fn test_approve_rejects_jurisdiction_lowercase() {
     let subject = Address::generate(&env);
     client.add_verifier(&verifier);
     let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "us"));
-    assert_eq!(res, Err(Ok(KycError::InvalidJurisdiction)));
+    assert_eq!(res, Err(Ok(Error::from(KycError::InvalidJurisdiction))));
 }
 
 #[test]
@@ -232,7 +232,7 @@ fn test_approve_rejects_jurisdiction_with_digit() {
     let subject = Address::generate(&env);
     client.add_verifier(&verifier);
     let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "U1"));
-    assert_eq!(res, Err(Ok(KycError::InvalidJurisdiction)));
+    assert_eq!(res, Err(Ok(Error::from(KycError::InvalidJurisdiction))));
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn test_approve_rejects_empty_jurisdiction() {
     let subject = Address::generate(&env);
     client.add_verifier(&verifier);
     let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, ""));
-    assert_eq!(res, Err(Ok(KycError::InvalidJurisdiction)));
+    assert_eq!(res, Err(Ok(Error::from(KycError::InvalidJurisdiction))));
 }
 
 #[test]
