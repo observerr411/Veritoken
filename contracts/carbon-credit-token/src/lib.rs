@@ -76,6 +76,15 @@ pub struct CarbonCreditToken;
 
 #[contractimpl]
 impl CarbonCreditToken {
+    fn validate_project_type(env: &Env, pt: &String) {
+        if *pt != String::from_str(env, "forestry")
+            && *pt != String::from_str(env, "renewable")
+            && *pt != String::from_str(env, "methane_capture")
+        {
+            panic!("invalid project_type");
+        }
+    }
+
     /// Constructor — called atomically at deploy time via `stellar contract deploy -- --admin ...`.
     /// Eliminates the deploy→initialize front-running window.
     pub fn __constructor(
@@ -85,6 +94,7 @@ impl CarbonCreditToken {
         compliance_engine: Address,
         meta: ProjectMeta,
     ) {
+        Self::validate_project_type(&env, &meta.project_type);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -158,6 +168,7 @@ impl CarbonCreditToken {
     /// Replace project metadata. Admin-only; project_id is immutable.
     pub fn update_meta(env: Env, new_meta: ProjectMeta) {
         Self::require_admin(&env);
+        Self::validate_project_type(&env, &new_meta.project_type);
         let old_meta: ProjectMeta = env.storage().instance().get(&DataKey::ProjectMeta).unwrap();
         if new_meta.project_id != old_meta.project_id {
             panic!("project_id is immutable");

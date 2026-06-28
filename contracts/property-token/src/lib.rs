@@ -85,6 +85,15 @@ pub struct PropertyToken;
 
 #[contractimpl]
 impl PropertyToken {
+    fn validate_property_type(env: &Env, pt: &String) {
+        if *pt != String::from_str(env, "residential")
+            && *pt != String::from_str(env, "commercial")
+            && *pt != String::from_str(env, "land")
+        {
+            panic!("invalid property_type");
+        }
+    }
+
     /// Constructor — called atomically at deploy time via `stellar contract deploy -- --admin ...`.
     /// Eliminates the deploy→initialize front-running window.
     pub fn __constructor(
@@ -94,6 +103,7 @@ impl PropertyToken {
         compliance_engine: Address,
         meta: PropertyMeta,
     ) {
+        Self::validate_property_type(&env, &meta.property_type);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -172,6 +182,7 @@ impl PropertyToken {
     pub fn update_meta(env: Env, new_meta: PropertyMeta) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
+        Self::validate_property_type(&env, &new_meta.property_type);
         let current = Self::get_meta(env.clone());
         // Cannot change structural fields
         if new_meta.property_id != current.property_id || new_meta.total_shares != current.total_shares {
@@ -347,6 +358,7 @@ impl PropertyToken {
         spender.require_auth();
         Self::require_kyc(&env, &from);
         Self::require_kyc(&env, &to);
+        Self::require_tier(&env, &to);
         Self::check_compliance(&env, &from, &to, shares);
         if shares <= 0 {
             panic!("shares must be positive");
