@@ -161,7 +161,7 @@ fn test_dividend_distribution() {
     h.token.mint(&alice, &100);
 
     // Deposit 1000 stroops over 1000 total shares => 1 per share.
-    h.token.deposit_dividend(&1_000);
+    h.token.deposit_dividend(&1_000, &2);
     assert_eq!(h.token.pending_dividend(&alice), 100);
 
     let claimed = h.token.claim_dividend(&alice);
@@ -183,13 +183,13 @@ fn test_multi_round_dividend_with_partial_transfer() {
     h.token.mint(&alice, &1_000);
 
     // First dividend round: Alice owns all 1000 shares.
-    h.token.deposit_dividend(&1_000);
+    h.token.deposit_dividend(&1_000, &2);
 
     // Transfer 400 shares to Bob after the first round.
     h.token.transfer(&alice, &bob, &400);
 
     // Second dividend round: Alice owns 600, Bob owns 400.
-    h.token.deposit_dividend(&1_000);
+    h.token.deposit_dividend(&1_000, &2);
 
     let alice_claimed = h.token.claim_dividend(&alice);
     let bob_claimed = h.token.claim_dividend(&bob);
@@ -202,7 +202,7 @@ fn test_multi_round_dividend_with_partial_transfer() {
 fn test_deposit_dividend_requires_shares() {
     let h = setup();
     // total_shares is 1000 from meta, so deposit works even before mint.
-    h.token.deposit_dividend(&1_000);
+    h.token.deposit_dividend(&1_000, &2);
     let alice = Address::generate(&h.env);
     assert_eq!(h.token.pending_dividend(&alice), 0);
 }
@@ -262,7 +262,7 @@ fn test_transfer_snapshots_dividends() {
     h.approve_kyc(&bob);
     h.token.mint(&alice, &100);
 
-    h.token.deposit_dividend(&1_000); // 1 per share
+    h.token.deposit_dividend(&1_000, &2); // 1 per share
                                       // Alice accrued 100 before transferring all her shares.
     h.token.transfer(&alice, &bob, &100);
 
@@ -273,7 +273,7 @@ fn test_transfer_snapshots_dividends() {
     assert_eq!(h.token.claim_dividend(&alice), 100);
 
     // A dividend declared after the transfer accrues to Bob, not Alice.
-    h.token.deposit_dividend(&1_000);
+    h.token.deposit_dividend(&1_000, &2);
     assert_eq!(h.token.pending_dividend(&bob), 100);
     assert_eq!(h.token.pending_dividend(&alice), 0);
 }
@@ -525,7 +525,7 @@ fn test_buyback_successful() {
     assert_eq!(h.token.total_shares(), 1_000);
 
     // Deposit dividend before buyback
-    h.token.deposit_dividend(&1_000); // 1 per share
+    h.token.deposit_dividend(&1_000, &2); // 1 per share
     assert_eq!(h.token.pending_dividend(&alice), 100);
 
     // Admin buys back 50 shares
@@ -638,8 +638,8 @@ fn test_dividend_history_records_deposits() {
 
     assert_eq!(h.token.dividend_deposit_count(), 0);
 
-    h.token.deposit_dividend(&1_000);
-    h.token.deposit_dividend(&2_000);
+    h.token.deposit_dividend(&1_000, &2);
+    h.token.deposit_dividend(&2_000, &2);
 
     assert_eq!(h.token.dividend_deposit_count(), 2);
 
@@ -660,8 +660,8 @@ fn test_dividend_history_running_total_dps() {
     h.approve_kyc(&alice);
     h.token.mint(&alice, &1_000);
 
-    h.token.deposit_dividend(&1_000);
-    h.token.deposit_dividend(&2_000);
+    h.token.deposit_dividend(&1_000, &2);
+    h.token.deposit_dividend(&2_000, &2);
 
     let history = h.token.get_dividend_history(&0, &10);
     assert_eq!(history.get(0).unwrap().running_total_dps, 1);
@@ -676,7 +676,7 @@ fn test_dividend_history_pagination() {
     h.token.mint(&alice, &1_000);
 
     for _ in 0..5 {
-        h.token.deposit_dividend(&100);
+        h.token.deposit_dividend(&100, &2);
     }
 
     let page = h.token.get_dividend_history(&2, &2);
@@ -691,3 +691,105 @@ fn test_dividend_history_empty_before_deposit() {
     assert_eq!(history.len(), 0);
     assert_eq!(h.token.dividend_deposit_count(), 0);
 }
+
+// ── #278 Rent yield tracking tests ───────────────────────────────────────────
+
+#[test]
+fn test_claim_rent_yield_only_claims_rent() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+
+    // Deposit 1000 as Rent (type 0) and 2000 as Capital (type 1)
+    h.token.deposit_dividend(&1_000, &0); // rent: 1 per share
+    h.token.deposit_dividend(&2_000, &1); // capital: 2 per share
+
+    let rent = h.token.claim_rent_yield(&alice);
+    assert_eq!(rent, 1_000); // 1 per share * 1000 shares
+
+    // Capital untouched
+    let capital = h.token.claim_capital_return(&alice);
+    assert_eq!(capital, 2_000); // 2 per share * 1000 shares
+}
+
+#[test]
+fn test_claim_capital_return_only_claims_capital() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &500);
+
+    // total_shares from meta = 1000, so DPS = amount / 1000
+    // deposit 1000 rent => DPS_rent = 1; deposit 2000 capital => DPS_cap = 2
+    h.token.deposit_dividend(&1_000, &0); // rent DPS = 1
+    h.token.deposit_dividend(&2_000, &1); // capital DPS = 2
+
+    let capital = h.token.claim_capital_return(&alice);
+    assert_eq!(capital, 1_000); // DPS=2 * 500 shares
+
+    // Rent untouched
+    let rent = h.token.claim_rent_yield(&alice);
+    assert_eq!(rent, 500); // DPS=1 * 500 shares
+}
+
+#[test]
+fn test_claim_dividend_claims_all_types() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &100);
+
+    // total_shares = 1000, so need multiples of 1000 for integer DPS > 0
+    // deposit 1000 => DPS=1; 2000 => DPS=2; 3000 => DPS=3
+    h.token.deposit_dividend(&1_000, &0); // rent DPS = 1
+    h.token.deposit_dividend(&2_000, &1); // capital DPS = 2
+    h.token.deposit_dividend(&3_000, &2); // other DPS = 3
+
+    let total = h.token.claim_dividend(&alice);
+    // total DPS = 6, 100 shares => 600
+    assert_eq!(total, 600);
+}
+
+#[test]
+fn test_mixed_deposits_independent_claiming() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    h.token.mint(&alice, &600);
+    h.token.mint(&bob, &400);
+
+    // Round 1: rent
+    h.token.deposit_dividend(&1_000, &0);
+    // Round 2: capital
+    h.token.deposit_dividend(&1_000, &1);
+
+    // Alice: 60% of rent + 60% of capital
+    assert_eq!(h.token.claim_rent_yield(&alice), 600);
+    assert_eq!(h.token.claim_capital_return(&alice), 600);
+
+    // Bob: 40% of each
+    assert_eq!(h.token.claim_rent_yield(&bob), 400);
+    assert_eq!(h.token.claim_capital_return(&bob), 400);
+}
+
+#[test]
+fn test_second_claim_yields_nothing() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &100);
+
+    h.token.deposit_dividend(&1_000, &0);
+
+    h.token.claim_rent_yield(&alice);
+    assert_eq!(h.token.claim_rent_yield(&alice), 0);
+
+    h.token.deposit_dividend(&1_000, &1);
+    h.token.claim_capital_return(&alice);
+    assert_eq!(h.token.claim_capital_return(&alice), 0);
+}
+

@@ -30,6 +30,15 @@ pub enum PropertyError {
 }
 
 #[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum DistributionType {
+    Rent = 0,
+    Capital = 1,
+    Other = 2,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
     PendingAdmin,
@@ -48,6 +57,12 @@ pub enum DataKey {
     HolderCount,
     DividendDeposit(u32),
     DividendDepositCount,
+    UnclaimedRent(Address),
+    UnclaimedCapital(Address),
+    DividendPerShareRent,
+    DividendPerShareCapital,
+    ClaimedDividendRent(Address),
+    ClaimedDividendCapital(Address),
 }
 
 #[contracttype]
@@ -56,6 +71,7 @@ pub struct DividendEvent {
     pub amount: i128,
     pub timestamp: u64,
     pub running_total_dps: i128,
+    pub distribution_type: u32,
 }
 
 #[contracttype]
@@ -399,7 +415,8 @@ impl PropertyToken {
     // ── Dividends ────────────────────────────────────────────────────────────
 
     /// Deposit dividend amount (in stroops) to be distributed pro-rata.
-    pub fn deposit_dividend(env: Env, amount: i128) {
+    /// `distribution_type`: 0 = Rent, 1 = Capital, 2 = Other.
+    pub fn deposit_dividend(env: Env, amount: i128, distribution_type: u32) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
         let total: i128 = env
@@ -419,6 +436,28 @@ impl PropertyToken {
         env.storage()
             .instance()
             .set(&DataKey::DividendPerShare, &new_dps);
+
+        // Update typed DPS for rent/capital tracking
+        if distribution_type == DistributionType::Rent as u32 {
+            let dps_rent: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::DividendPerShareRent)
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&DataKey::DividendPerShareRent, &(dps_rent + amount / total));
+        } else if distribution_type == DistributionType::Capital as u32 {
+            let dps_cap: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::DividendPerShareCapital)
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&DataKey::DividendPerShareCapital, &(dps_cap + amount / total));
+        }
+
         let pool: i128 = env
             .storage()
             .instance()
@@ -437,6 +476,7 @@ impl PropertyToken {
             amount,
             timestamp: env.ledger().timestamp(),
             running_total_dps: new_dps,
+            distribution_type,
         };
         let deposit_key = DataKey::DividendDeposit(count);
         env.storage().persistent().set(&deposit_key, &event);
@@ -447,7 +487,7 @@ impl PropertyToken {
             .instance()
             .set(&DataKey::DividendDepositCount, &(count + 1));
 
-        env.events().publish((symbol_short!("div_dep"),), amount);
+        env.events().publish((symbol_short!("div_dep"),), (amount, distribution_type));
     }
 
     pub fn dividend_deposit_count(env: Env) -> u32 {
@@ -510,6 +550,54 @@ impl PropertyToken {
             .get(&DataKey::Unclaimed(holder.clone()))
             .unwrap_or(0);
         unclaimed + Self::accrued(&env, holder)
+    }
+
+    /// Claim only rent-yield dividends for `holder`.
+    pub fn claim_rent_yield(env: Env, holder: Address) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        holder.require_auth();
+        Self::accrue_typed(&env, holder.clone());
+        let key = DataKey::UnclaimedRent(holder.clone());
+        let amount: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        if amount <= 0 {
+            return 0;
+        }
+        env.storage().instance().set(&key, &0i128);
+        let pool: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DividendPool)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::DividendPool, &(pool - amount));
+        env.events()
+            .publish((symbol_short!("rent_clm"), holder), amount);
+        amount
+    }
+
+    /// Claim only capital-return dividends for `holder`.
+    pub fn claim_capital_return(env: Env, holder: Address) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        holder.require_auth();
+        Self::accrue_typed(&env, holder.clone());
+        let key = DataKey::UnclaimedCapital(holder.clone());
+        let amount: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        if amount <= 0 {
+            return 0;
+        }
+        env.storage().instance().set(&key, &0i128);
+        let pool: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DividendPool)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::DividendPool, &(pool - amount));
+        env.events()
+            .publish((symbol_short!("cap_clm"), holder), amount);
+        amount
     }
 
     pub fn get_holders(env: Env, start: u32, limit: u32) -> Vec<Address> {
@@ -580,6 +668,7 @@ impl PropertyToken {
             let unclaimed: i128 = env.storage().instance().get(&key).unwrap_or(0);
             env.storage().instance().set(&key, &(unclaimed + owed));
         }
+        Self::accrue_typed(env, holder.clone());
         Self::reset_debt(env, holder);
     }
 
@@ -589,6 +678,53 @@ impl PropertyToken {
         env.storage()
             .instance()
             .set(&DataKey::ClaimedDividend(holder), &debt);
+    }
+
+    /// Accrue typed (rent/capital) dividends for `holder` into their typed unclaimed buckets.
+    fn accrue_typed(env: &Env, holder: Address) {
+        let bal = Self::read_balance(env, holder.clone());
+
+        // Rent
+        let dps_rent: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DividendPerShareRent)
+            .unwrap_or(0);
+        let claimed_rent: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ClaimedDividendRent(holder.clone()))
+            .unwrap_or(0);
+        let owed_rent = bal * dps_rent - claimed_rent;
+        if owed_rent > 0 {
+            let key = DataKey::UnclaimedRent(holder.clone());
+            let prev: i128 = env.storage().instance().get(&key).unwrap_or(0);
+            env.storage().instance().set(&key, &(prev + owed_rent));
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ClaimedDividendRent(holder.clone()), &(bal * dps_rent));
+
+        // Capital
+        let dps_cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DividendPerShareCapital)
+            .unwrap_or(0);
+        let claimed_cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ClaimedDividendCapital(holder.clone()))
+            .unwrap_or(0);
+        let owed_cap = bal * dps_cap - claimed_cap;
+        if owed_cap > 0 {
+            let key = DataKey::UnclaimedCapital(holder.clone());
+            let prev: i128 = env.storage().instance().get(&key).unwrap_or(0);
+            env.storage().instance().set(&key, &(prev + owed_cap));
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ClaimedDividendCapital(holder), &(bal * dps_cap));
     }
 
     fn require_admin(env: &Env) {
