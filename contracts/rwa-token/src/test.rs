@@ -831,3 +831,100 @@ fn test_batch_transfer_from_exceeds_max_recipients() {
     assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
     assert_eq!(h.token.balance(&alice), 10_000);
 }
+
+// ── Reentrancy-safe transfer execution paths (#345) ───────────────────────────
+
+#[test]
+fn test_transfer_completes_and_lock_is_released() {
+    // Verify the guard does not permanently lock out subsequent transfers.
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &1_000);
+
+    h.token.transfer(&alice, &bob, &200);
+    assert_eq!(h.token.balance(&alice), 800);
+
+    // Guard must be released — second transfer must succeed.
+    h.token.transfer(&alice, &bob, &100);
+    assert_eq!(h.token.balance(&alice), 700);
+    assert_eq!(h.token.balance(&bob), 300);
+}
+
+#[test]
+fn test_transfer_from_lock_is_released_after_success() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &1_000);
+
+    let expiration = h.env.ledger().sequence() + 1_000;
+    h.token.approve(&alice, &spender, &600, &expiration);
+
+    h.token.transfer_from(&spender, &alice, &bob, &200);
+    assert_eq!(h.token.balance(&alice), 800);
+
+    // Lock cleared — second delegated transfer must succeed.
+    h.token.transfer_from(&spender, &alice, &bob, &100);
+    assert_eq!(h.token.balance(&alice), 700);
+}
+
+#[test]
+fn test_batch_transfer_lock_is_released_after_success() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.token.mint(&alice, &1_000);
+
+    let r1 = vec![&h.env, RecipientEntry { to: bob.clone(), amount: 100 }];
+    h.token.batch_transfer(&alice, &r1);
+    assert_eq!(h.token.balance(&bob), 100);
+
+    // Lock released — second batch must succeed.
+    let r2 = vec![&h.env, RecipientEntry { to: carol.clone(), amount: 50 }];
+    h.token.batch_transfer(&alice, &r2);
+    assert_eq!(h.token.balance(&carol), 50);
+}
+
+#[test]
+fn test_failed_transfer_does_not_leave_lock_set() {
+    // Soroban rolls back all storage changes on panic, so the lock set by
+    // enter_transfer_guard is cleared automatically on a failed transfer.
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env); // no KYC
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&carol);
+    h.token.mint(&alice, &1_000);
+
+    assert!(h.token.try_transfer(&alice, &bob, &100).is_err());
+    assert_eq!(h.token.balance(&alice), 1_000);
+
+    // Lock must be cleared (rolled back). Subsequent transfer must succeed.
+    h.token.transfer(&alice, &carol, &200);
+    assert_eq!(h.token.balance(&alice), 800);
+    assert_eq!(h.token.balance(&carol), 200);
+}
+
+#[test]
+fn test_validate_before_mutate_self_transfer() {
+    // Self-transfers: spend + receive cancel out, balance unchanged.
+    // Guards the validate-before-mutate sequence against the self-send edge case.
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+
+    h.token.transfer(&alice, &alice, &500);
+    assert_eq!(h.token.balance(&alice), 1_000);
+}

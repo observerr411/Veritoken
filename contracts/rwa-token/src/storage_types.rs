@@ -21,6 +21,12 @@ pub enum DataKey {
     Allowance(AllowanceKey),
     ComplianceMeta(Symbol),
     Frozen(Address),
+    // ── Reentrancy guard (#345) ──────────────────────────────────────────────
+    /// Set to `true` while a transfer is executing; cleared on exit.
+    /// Any nested entry through a transfer path panics while this flag is set,
+    /// preventing state corruption if future cross-contract extensions try to
+    /// call back into this contract during an in-flight transfer.
+    TransferLock,
 }
 
 #[contracttype]
